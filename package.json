@@ -1,0 +1,14 @@
+{
+  "name": "can-on-svs-01",
+  "version": "1.2.0",
+  "description": "Ontario Secondary STEM Socratic Voice Tutor (CAN-ON-SVS-01 + Service Bulletin SB-02 Dual-Channel Math HUD & Gemini Neural Voice)",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node verify-svs.mjs"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

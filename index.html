@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ontario STEM Socratic Tutor — Dual-Channel HUD &amp; Voice Chat</title>
+  <!-- KaTeX for Instant 0ms <hud> LaTeX Rendering (Service Bulletin CAN-ON-SVS-SB-02) -->
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
+    crossorigin="anonymous"
+  />
+  <script
+    defer
+    src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
+    crossorigin="anonymous"
+  ></script>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- TOP BAR -->
+    <header class="top-bar">
+      <div class="brand">
+        <span class="sparkle-icon">✦</span>
+        <div>
+          <h1>Ontario STEM Tutor</h1>
+          <span class="subtitle">Grades 9–12 • Dual-Channel Math HUD + Natural Voice</span>
+        </div>
+      </div>
+
+      <!-- QUICK MODE SELECTOR PILLS -->
+      <div class="mode-pills" id="modeSelectorList" role="tablist" aria-label="Tutoring Mode">
+        <!-- Populated by app.js -->
+      </div>
+
+      <div class="top-actions">
+        <button class="icon-btn" id="btnClearLog" title="Start a new conversation">
+          New Chat
+        </button>
+        <button class="icon-btn primary-outline" id="btnToggleParams" title="Show or hide model parameters">
+          ⚙ Controls &amp; Sliders
+        </button>
+      </div>
+    </header>
+
+    <!-- MAIN WORKSPACE: GEMINI CHAT + ADJUSTABLE PARAMETERS SIDEBAR -->
+    <div class="main-workspace" id="mainWorkspace">
+      <!-- GEMINI CHAT WINDOW -->
+      <main class="chat-column">
+        <!-- PINNED LIVE HEADS-UP DISPLAY (CHANNEL 1: HUD_DISPLAY) -->
+        <section class="live-hud-banner" id="liveHudBanner" hidden>
+          <div class="live-hud-header">
+            <span class="hud-channel-badge">CHANNEL 1 // ACTIVE MATH STEP HUD</span>
+            <span class="hud-latency-tag" id="hudRenderLatency">0 ms KaTeX Render</span>
+          </div>
+          <div class="live-hud-equation" id="liveHudEquation"></div>
+        </section>
+
+        <div class="chat-scroll-area" id="commsLog" aria-live="polite">
+          <!-- Messages rendered here -->
+        </div>
+
+        <!-- STARTER PROMPTS BAR -->
+        <div class="starter-prompts-bar">
+          <div class="starter-chips" id="scenarioChips">
+            <!-- Populated by app.js -->
+          </div>
+        </div>
+
+        <!-- BOTTOM GEMINI PILL INPUT BAR -->
+        <div class="input-dock">
+          <!-- LIVE VOICE STATUS PILL -->
+          <div class="voice-status-banner" id="voiceStatusBanner">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="vadStateTag">Mic off — click Speak to talk</span>
+            <button type="button" class="stop-voice-btn" id="btnBargeIn" hidden>
+              ■ Stop Speaking
+            </button>
+          </div>
+
+          <form class="gemini-input-pill" id="commsForm">
+            <button
+              type="button"
+              class="mic-pill-btn"
+              id="btnToggleMic"
+              title="Toggle voice microphone"
+            >
+              <span class="mic-icon">🎤</span>
+              <span id="micBtnLabel">Speak</span>
+            </button>
+
+            <input
+              type="text"
+              id="studentInput"
+              placeholder="Ask any Ontario Grade 9–12 math, physics, or chemistry question..."
+              autocomplete="off"
+            />
+
+            <button type="submit" class="send-pill-btn" title="Send message">
+              ➤
+            </button>
+          </form>
+        </div>
+      </main>
+
+      <!-- MODEL PARAMETERS & VOICE CONTROLS DRAWER -->
+      <aside class="params-drawer" id="paramsDrawer">
+        <div class="drawer-header">
+          <h2>Model &amp; Voice Parameters</h2>
+          <button type="button" class="close-drawer-btn" id="btnCloseParams" title="Hide panel">✕</button>
+        </div>
+
+        <!-- 1. TUTOR VOICE PERSONA BUTTONS -->
+        <div class="param-group">
+          <label class="param-label">Tutor Voice Style</label>
+          <div class="persona-grid" id="profileSelectorGrid">
+            <!-- Populated by app.js -->
+          </div>
+        </div>
+
+        <!-- 2. NATURAL HUMAN VOICE DROPDOWN -->
+        <div class="param-group">
+          <div class="param-label-row">
+            <label class="param-label" for="voiceSelectDropdown">Natural Voice</label>
+            <button type="button" class="text-link-btn" id="btnReplayLast">🔊 Test Voice</button>
+          </div>
+          <select id="voiceSelectDropdown" class="clean-select">
+            <option value="">Auto (Match Tutor Style)</option>
+          </select>
+          <span class="param-hint" id="activeVoiceHint">Studio Human Voice: Aoede</span>
+        </div>
+
+        <!-- 3. ECHO PROTECTION TOGGLE -->
+        <div class="param-group toggle-card">
+          <div>
+            <label class="param-label" for="chkEchoGuard">Speaker Echo Protection</label>
+            <p class="param-hint">Mutes microphone while the tutor is speaking so it never hears itself.</p>
+          </div>
+          <input type="checkbox" id="chkEchoGuard" checked class="toggle-checkbox" />
+        </div>
+
+        <!-- 4. SLIDERS FOR MODEL PARAMETERS -->
+        <div class="param-group">
+          <div class="param-label-row">
+            <label class="param-label" for="maxWordsSlider">Spoken Audio Ceiling (SB-02)</label>
+            <span class="slider-val" id="maxWordsValue">30 words</span>
+          </div>
+          <input type="range" id="maxWordsSlider" min="15" max="60" step="5" value="30" />
+          <span class="param-hint">Channel 2 spoken limit (equations render silently on the HUD).</span>
+        </div>
+
+        <div class="param-group">
+          <div class="param-label-row">
+            <label class="param-label" for="rateSlider">Speaking Speed</label>
+            <span class="slider-val" id="rateValue">1.00×</span>
+          </div>
+          <input type="range" id="rateSlider" min="0.85" max="1.20" step="0.05" value="1.00" />
+        </div>
+
+        <div class="param-group">
+          <div class="param-label-row">
+            <label class="param-label" for="pitchSlider">Voice Pitch</label>
+            <span class="slider-val" id="pitchValue">1.00</span>
+          </div>
+          <input type="range" id="pitchSlider" min="0.90" max="1.10" step="0.02" value="1.00" />
+        </div>
+
+        <div class="param-group">
+          <div class="param-label-row">
+            <label class="param-label" for="vadThresholdSlider">Mic Pause Sensitivity</label>
+            <span class="slider-val" id="vadThresholdValue">450 ms</span>
+          </div>
+          <input type="range" id="vadThresholdSlider" min="250" max="900" step="50" value="450" />
+          <span class="param-hint">How long to wait after you finish speaking before replying.</span>
+        </div>
+
+        <!-- 5. OPTIONAL GEMINI API CONNECTION -->
+        <details class="advanced-details">
+          <summary>Custom Gemini API Key (Optional)</summary>
+          <div class="advanced-body">
+            <label class="param-label" for="geminiApiKeyInput">Gemini API Key</label>
+            <input
+              type="password"
+              id="geminiApiKeyInput"
+              class="clean-input"
+              placeholder="Uses server key by default"
+              autocomplete="off"
+            />
+            <button type="button" class="apply-api-btn" id="btnSaveConfig">Save Key</button>
+            <span class="param-hint" id="engineStatusBadge">Active: Gemini 2.5 Flash + Dual-Channel SB-02</span>
+          </div>
+        </details>
+      </aside>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
