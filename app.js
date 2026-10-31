@@ -1,17 +1,22 @@
 /**
- * Ontario STEM Socratic Voice Tutor — Dual-Channel HUD + Gemini Chat UI Controller
- * Implements CAN-ON-SVS-01 + Service Bulletin CAN-ON-SVS-SB-02:
- *  - Channel 1 (<hud>...</hud>): Instant 0ms KaTeX Visual Step Rendering on DOM
- *  - Channel 2 (Spoken Audio): Stripped of <hud>, routed exclusively to Studio Neural Human Voice (/api/tts)
+ * Ontario STEM Socratic Voice Tutor — Tri-Channel HUD, Telemetry & Gemini Chat Controller
+ * Implements:
+ *  - Section 00: Multi-Channel Decoupling (<hud>, <telemetry>, Spoken Audio)
+ *  - Section 10: Off-Screen Scratchpad & Deliberation Protocol (Tier 1=5s, Tier 2=20s, Tier 3=45s, Soft-Ping, Retroactive Attribution)
+ *  - Section 20: Live Telemetry JSON Engine
  */
 
 import {
   VOCAL_PROFILES,
   NEURAL_HUMAN_VOICES,
   FLIGHT_MODES,
+  STEP_TIERS,
+  DEFAULT_TELEMETRY,
   STEM_SCENARIOS,
   buildSystemInstruction,
-  parseDualChannelPacket,
+  parseTriChannelPacket,
+  computeRetroactiveAttribution,
+  generateScratchpadSoftPing,
   detectSystemCommand,
   generateOfflineSocraticResponse
 } from './svs-engine.js';
@@ -22,10 +27,19 @@ class SocraticGeminiChatApp {
   constructor() {
     this.activeProfileKey = 'CHARLIE';
     this.activeModeId = 1;
-    this.maxWords = 30; // SB-02 Default: 30 words ceiling for spoken Channel 2
+    this.maxWords = 30;
     this.geminiApiKey = '';
     this.conversationHistory = [];
     this.lastSpokenBurst = 'Hi there! What Ontario high school math, physics, or chemistry problem are we solving today?';
+    this.lastHudLatex = '';
+
+    // Section 10 & 20: Telemetry & Off-Screen Scratchpad Deliberation State
+    this.currentTelemetry = { ...DEFAULT_TELEMETRY };
+    this.autoScratchpadPing = true;
+    this.delibStartTimestamp = 0;
+    this.delibInterval = null;
+    this.softPingIssuedForTurn = false;
+    this.hasActiveProblemTurn = false;
 
     this.isBotSpeaking = false;
     this.isUserSpeaking = false;
@@ -47,14 +61,20 @@ class SocraticGeminiChatApp {
         const stopBtn = document.getElementById('btnBargeIn');
         if (stopBtn) stopBtn.hidden = !speaking;
         this.updateMicStatusUI();
+
+        // Start off-screen scratchpad deliberation clock once tutor finishes speaking a problem turn
+        if (!speaking && this.hasActiveProblemTurn && !this.softPingIssuedForTurn) {
+          this.startScratchpadDeliberationClock();
+        }
       }
     });
 
     this.initUI();
+    this.updateTelemetryUI(this.currentTelemetry);
 
     this.appendChatMessage(
       'svs',
-      'Hi! I am your Ontario high school STEM tutor with Dual-Channel Math HUD and natural human voice. Equations appear visually on your screen while I talk you through each step.',
+      'Hi! I am your Ontario high school STEM tutor with Tri-Channel HUD, Scratchpad Deliberation Telemetry, and natural human voice. Pick a starter problem below or ask any STEM question.',
       `${VOCAL_PROFILES[this.activeProfileKey].code} • ${FLIGHT_MODES[this.activeModeId].name}`,
       ''
     );
@@ -103,8 +123,23 @@ class SocraticGeminiChatApp {
       }
     });
 
+    // Test Section 10.2 Non-Intrusive Soft-Ping Button
+    document.getElementById('btnTriggerSoftPing').addEventListener('click', () => {
+      this.triggerScratchpadSoftPing('MANUAL_TEST');
+    });
+
+    // Auto Scratchpad Soft-Ping Toggle
+    document.getElementById('chkScratchpadPing').addEventListener('change', (e) => {
+      this.autoScratchpadPing = e.target.checked;
+    });
+
     document.getElementById('btnClearLog').addEventListener('click', () => {
       this.conversationHistory = [];
+      this.stopScratchpadDeliberationClock();
+      this.hasActiveProblemTurn = false;
+      this.lastHudLatex = '';
+      this.currentTelemetry = { ...DEFAULT_TELEMETRY };
+      this.updateTelemetryUI(this.currentTelemetry);
       document.getElementById('commsLog').innerHTML = '';
       document.getElementById('liveHudBanner').hidden = true;
       this.appendChatMessage(
@@ -168,9 +203,82 @@ class SocraticGeminiChatApp {
         this.geminiApiKey = document.getElementById('geminiApiKeyInput').value.trim();
         this.avionics.apiKey = this.geminiApiKey;
         document.getElementById('engineStatusBadge').textContent =
-          'Active: Gemini 2.5 Flash + Dual-Channel SB-02';
+          'Active: Gemini 2.5 Flash + Tri-Channel Engine';
       });
     }
+  }
+
+  /**
+   * Section 10: Off-Screen Scratchpad & Deliberation Timer
+   * Tracks student pause duration against Tier 1 (5s), Tier 2 (20s), or Tier 3 (45s) t_expected
+   */
+  startScratchpadDeliberationClock() {
+    this.stopScratchpadDeliberationClock();
+    this.delibStartTimestamp = performance.now();
+
+    const tierObj = STEP_TIERS[this.currentTelemetry.step_tier] || STEP_TIERS[1];
+    const expectedSec = tierObj.expectedSec;
+
+    this.delibInterval = setInterval(() => {
+      if (this.isBotSpeaking) {
+        this.delibStartTimestamp = performance.now();
+        return;
+      }
+
+      const elapsedSec = (performance.now() - this.delibStartTimestamp) / 1000;
+      const pct = Math.min(100, (elapsedSec / expectedSec) * 100);
+
+      const timerEl = document.getElementById('stripScratchpadTimer');
+      const fillEl = document.getElementById('stripScratchpadFill');
+      if (timerEl) {
+        timerEl.textContent = `${elapsedSec.toFixed(1)}s / ${expectedSec}s`;
+      }
+      if (fillEl) {
+        fillEl.style.width = `${pct}%`;
+        fillEl.style.backgroundColor = elapsedSec >= expectedSec ? '#fdd663' : '#a8c7fa';
+      }
+
+      // Transition visual badge to SCRATCHPAD_ACTIVE after 3 seconds of off-screen calculation
+      if (elapsedSec >= 3.0 && this.currentTelemetry.delib_state === 'IMMEDIATE') {
+        this.currentTelemetry.delib_state = 'SCRATCHPAD_ACTIVE';
+        this.updateDelibBadgeUI('SCRATCHPAD_ACTIVE');
+      }
+
+      // Section 10.2: Non-Intrusive Soft-Ping when silence exceeds t_expected
+      if (this.autoScratchpadPing && !this.softPingIssuedForTurn && elapsedSec >= expectedSec) {
+        this.softPingIssuedForTurn = true;
+        this.triggerScratchpadSoftPing('AUTO_T_EXPECTED');
+      }
+    }, 200);
+  }
+
+  stopScratchpadDeliberationClock() {
+    if (this.delibInterval) {
+      clearInterval(this.delibInterval);
+      this.delibInterval = null;
+    }
+  }
+
+  getElapsedDeliberationSeconds() {
+    if (!this.delibStartTimestamp) return 0;
+    return Math.max(0, (performance.now() - this.delibStartTimestamp) / 1000);
+  }
+
+  /**
+   * Section 10.2: Issues the Non-Intrusive Soft-Ping when silence exceeds t_expected
+   */
+  triggerScratchpadSoftPing(reason = 'AUTO_T_EXPECTED') {
+    const pingPacket = generateScratchpadSoftPing(this.currentTelemetry.step_tier, this.lastHudLatex);
+    this.currentTelemetry = pingPacket.telemetry;
+    this.updateTelemetryUI(this.currentTelemetry);
+
+    const profile = VOCAL_PROFILES[this.activeProfileKey];
+    const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
+    const footerTag = `${profile.code} (${voiceName}) • Soft-Ping (${reason === 'MANUAL_TEST' ? 'Test' : `t_exp Exceeded`})`;
+
+    this.appendChatMessage('svs', pingPacket.spokenText, footerTag, '');
+    this.lastSpokenBurst = pingPacket.spokenText;
+    this.avionics.speakCalibratedBurst(pingPacket.spokenText, this.activeProfileKey);
   }
 
   populateVoiceDropdown() {
@@ -264,26 +372,42 @@ class SocraticGeminiChatApp {
   }
 
   async processStudentTransmission(utterance) {
+    const pauseSeconds = this.getElapsedDeliberationSeconds();
+    this.stopScratchpadDeliberationClock();
+    this.softPingIssuedForTurn = false;
     this.avionics.stopSpeaking('NEW_STUDENT_TURN');
+
     this.appendChatMessage('student', utterance);
+
+    // Compute Section 10.3 Retroactive Attribution baseline from pause duration & utterance
+    const retroactiveTelemetry = computeRetroactiveAttribution(
+      utterance,
+      pauseSeconds,
+      this.currentTelemetry.step_tier,
+      this.currentTelemetry.hint_level
+    );
 
     const sysCmd = detectSystemCommand(utterance);
     if (sysCmd && sysCmd.type === 'MODE_SWITCH') {
       this.selectMode(sysCmd.mode);
-      this.emitDualChannelResponse(sysCmd.response, { speak: true });
+      this.emitTriChannelResponse(sysCmd.response, { speak: true, fallbackTelemetry: retroactiveTelemetry });
       return;
     }
 
     const thinkingEl = this.appendThinkingBubble();
 
     try {
-      const llmReply = await this.fetchServerGeminiChat(utterance);
+      const llmReply = await this.fetchServerGeminiChat(utterance, pauseSeconds);
       thinkingEl.remove();
 
       if (llmReply) {
         this.conversationHistory.push({ role: 'user', text: utterance });
         this.conversationHistory.push({ role: 'svs', text: llmReply });
-        this.emitDualChannelResponse(llmReply, { speak: true });
+        this.hasActiveProblemTurn = true;
+        this.emitTriChannelResponse(llmReply, {
+          speak: true,
+          fallbackTelemetry: retroactiveTelemetry
+        });
         return;
       }
     } catch (err) {
@@ -291,19 +415,29 @@ class SocraticGeminiChatApp {
       console.warn('Server chat fallback:', err);
     }
 
+    this.hasActiveProblemTurn = true;
     const simResult = generateOfflineSocraticResponse(utterance, this.activeModeId, this.activeProfileKey);
-    this.emitDualChannelResponse(simResult.text, { speak: true });
+    this.emitTriChannelResponse(simResult.text, {
+      speak: true,
+      fallbackTelemetry: retroactiveTelemetry
+    });
   }
 
-  async fetchServerGeminiChat(utterance) {
+  async fetchServerGeminiChat(utterance, pauseSeconds = 0) {
     const sysPrompt = buildSystemInstruction(this.activeProfileKey, this.activeModeId, this.maxWords);
+    const tierObj = STEP_TIERS[this.currentTelemetry.step_tier] || STEP_TIERS[1];
+    const annotatedMessage =
+      pauseSeconds >= 4
+        ? `[Student Deliberation Pause: ${pauseSeconds.toFixed(1)}s | Previous Step Tier: ${tierObj.tier} (t_expected=${tierObj.expectedSec}s)]\n${utterance}`
+        : utterance;
+
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         systemInstruction: sysPrompt,
         history: this.conversationHistory,
-        message: utterance,
+        message: annotatedMessage,
         apiKey: this.geminiApiKey || undefined
       })
     });
@@ -331,36 +465,99 @@ class SocraticGeminiChatApp {
   }
 
   /**
-   * SERVICE BULLETIN CAN-ON-SVS-SB-02 DUAL-CHANNEL DISPATCH:
-   *  1. Extracts `<hud>...</hud>` and renders LaTeX to DOM immediately (0ms lag)
-   *  2. Strips `<hud>...</hud>` from the audio buffer and dispatches only the spoken inquiry to TTS
+   * CAN-ON-SVS-PROTOTYPE TRI-CHANNEL DISPATCH:
+   *  - Channel 1 (<hud>): Instant 0ms KaTeX render to DOM
+   *  - Channel 2 (<telemetry>): Updates live Cognitive Telemetry & Scratchpad Tier clock
+   *  - Channel 3 (Spoken Audio): Stripped of <hud> & <telemetry>, routed to Studio Neural Voice
    */
-  emitDualChannelResponse(rawText, options = { speak: true, badge: '' }) {
+  emitTriChannelResponse(rawText, options = { speak: true, badge: '', fallbackTelemetry: null }) {
     const t0 = performance.now();
-    const packet = parseDualChannelPacket(rawText, this.maxWords);
+    const packet = parseTriChannelPacket(rawText, this.maxWords, options.fallbackTelemetry);
 
-    // 1. Update Pinned Live HUD Banner immediately if packet includes <hud> LaTeX
+    // 1. Channel 1: Update Pinned Live HUD Banner immediately if packet includes <hud> LaTeX
     if (packet.hudLatex) {
+      this.lastHudLatex = packet.hudLatex;
       this.updatePinnedLiveHud(packet.hudLatex, performance.now() - t0);
     }
+
+    // 2. Channel 2: Update Live Telemetry Dashboard & Complexity Tier Latency Envelope
+    this.currentTelemetry = packet.telemetry;
+    this.updateTelemetryUI(this.currentTelemetry);
 
     const profile = VOCAL_PROFILES[this.activeProfileKey];
     const mode = FLIGHT_MODES[this.activeModeId];
     const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
+    const tierLabel = `Tier ${packet.telemetry.step_tier} • ${packet.telemetry.delib_state}`;
     const footerTag = options.badge
       ? `${profile.code} (${voiceName}) • ${options.badge}`
-      : `${profile.code} (${voiceName}) • ${mode.name}`;
+      : `${profile.code} (${voiceName}) • ${mode.name} • ${tierLabel}`;
 
-    // 2. Render chat bubble with both the silent HUD Math Card + spoken inquiry text
+    // 3. Render chat bubble with silent HUD Math Card + spoken inquiry text
     this.appendChatMessage('svs', packet.spokenText, footerTag, packet.hudLatex);
 
-    // 3. Route ONLY the stripped spoken inquiry (Channel 2) to the Neural Voice synthesizer
+    // 4. Channel 3: Route ONLY the stripped spoken inquiry to the Neural Voice synthesizer
     if (packet.spokenText) {
       this.lastSpokenBurst = packet.spokenText;
       if (options.speak) {
         this.avionics.speakCalibratedBurst(packet.spokenText, this.activeProfileKey);
+      } else if (this.hasActiveProblemTurn) {
+        this.startScratchpadDeliberationClock();
       }
     }
+  }
+
+  updateTelemetryUI(telemetry) {
+    const tierObj = STEP_TIERS[telemetry.step_tier] || STEP_TIERS[1];
+
+    // Update top strip
+    const tierBadge = document.getElementById('stripTierBadge');
+    if (tierBadge) {
+      tierBadge.textContent = `TIER ${tierObj.tier} (t_exp = ${tierObj.expectedSec}s)`;
+    }
+
+    this.updateDelibBadgeUI(telemetry.delib_state);
+
+    const timerEl = document.getElementById('stripScratchpadTimer');
+    const fillEl = document.getElementById('stripScratchpadFill');
+    if (timerEl) timerEl.textContent = `0.0s / ${tierObj.expectedSec}s`;
+    if (fillEl) fillEl.style.width = '0%';
+
+    const hintBadge = document.getElementById('stripHintBadge');
+    if (hintBadge) {
+      hintBadge.textContent = `Level ${telemetry.hint_level} / 4`;
+    }
+
+    // Update sidebar Channel 2 gauges
+    const setGauge = (valId, fillId, val) => {
+      const vEl = document.getElementById(valId);
+      const fEl = document.getElementById(fillId);
+      if (vEl) vEl.textContent = String(val);
+      if (fEl) fEl.style.width = `${val}%`;
+    };
+
+    setGauge('valIFlow', 'fillIFlow', telemetry.i_flow);
+    setGauge('valIEff', 'fillIEff', telemetry.i_eff);
+    setGauge('valIReg', 'fillIReg', telemetry.i_reg);
+    setGauge('valCli', 'fillCli', telemetry.cli);
+
+    const jsonBox = document.getElementById('telemetryJsonBox');
+    if (jsonBox) {
+      jsonBox.textContent = `<telemetry>${JSON.stringify(telemetry)}</telemetry>`;
+    }
+  }
+
+  updateDelibBadgeUI(delibState) {
+    const badge = document.getElementById('stripDelibBadge');
+    if (!badge) return;
+    badge.textContent = delibState;
+
+    const classMap = {
+      IMMEDIATE: 'delib-badge immediate',
+      SCRATCHPAD_ACTIVE: 'delib-badge scratchpad',
+      DEEP_DELIBERATION: 'delib-badge deep',
+      COGNITIVE_STALL: 'delib-badge stall'
+    };
+    badge.className = classMap[delibState] || 'delib-badge immediate';
   }
 
   updatePinnedLiveHud(latexStr, elapsedMs) {
@@ -404,7 +601,6 @@ class SocraticGeminiChatApp {
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble';
 
-    // Channel 1: Render <hud> Visual Math Card inside the tutor bubble before spoken text
     if (role === 'svs' && hudLatex) {
       const hudCard = document.createElement('div');
       hudCard.className = 'hud-math-card';
@@ -421,7 +617,6 @@ class SocraticGeminiChatApp {
       bubble.appendChild(hudCard);
     }
 
-    // Channel 2: Spoken Inquiry Text
     const p = document.createElement('div');
     p.textContent = spokenText;
     bubble.appendChild(p);
@@ -469,7 +664,7 @@ class SocraticGeminiChatApp {
       micBtnLabel.textContent = 'Speak';
       statusDot.className = 'status-dot';
       vadStateTag.textContent = this.isBotSpeaking
-        ? 'Tutor speaking (HUD equation displayed silently)...'
+        ? 'Tutor speaking (HUD & Telemetry updated silently)...'
         : 'Mic off — click Speak to talk with the tutor';
       return;
     }

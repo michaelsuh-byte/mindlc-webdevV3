@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Ontario STEM Socratic Tutor — Dual-Channel HUD &amp; Voice Chat</title>
-  <!-- KaTeX for Instant 0ms <hud> LaTeX Rendering (Service Bulletin CAN-ON-SVS-SB-02) -->
+  <title>Ontario STEM Socratic Tutor — Tri-Channel HUD, Telemetry &amp; Voice Chat</title>
+  <!-- KaTeX for Instant 0ms <hud> LaTeX Rendering -->
   <link
     rel="stylesheet"
     href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
@@ -25,7 +25,7 @@
         <span class="sparkle-icon">✦</span>
         <div>
           <h1>Ontario STEM Tutor</h1>
-          <span class="subtitle">Grades 9–12 • Dual-Channel Math HUD + Natural Voice</span>
+          <span class="subtitle">Grades 9–12 • Tri-Channel Math HUD + Scratchpad Telemetry + Natural Voice</span>
         </div>
       </div>
 
@@ -38,20 +38,45 @@
         <button class="icon-btn" id="btnClearLog" title="Start a new conversation">
           New Chat
         </button>
-        <button class="icon-btn primary-outline" id="btnToggleParams" title="Show or hide model parameters">
-          ⚙ Controls &amp; Sliders
+        <button class="icon-btn primary-outline" id="btnToggleParams" title="Show or hide model parameters & telemetry">
+          ⚙ Controls &amp; Telemetry
         </button>
       </div>
     </header>
 
-    <!-- MAIN WORKSPACE: GEMINI CHAT + ADJUSTABLE PARAMETERS SIDEBAR -->
+    <!-- MAIN WORKSPACE: GEMINI CHAT + ADJUSTABLE PARAMETERS & TELEMETRY SIDEBAR -->
     <div class="main-workspace" id="mainWorkspace">
       <!-- GEMINI CHAT WINDOW -->
       <main class="chat-column">
+        <!-- COMPACT SCRATCHPAD & DELIBERATION TELEMETRY STRIP -->
+        <section class="scratchpad-telemetry-strip" id="scratchpadStrip">
+          <div class="strip-item">
+            <span class="strip-label">COMPLEXITY TIER</span>
+            <strong class="strip-val" id="stripTierBadge">TIER 1 (t_exp = 5s)</strong>
+          </div>
+          <div class="strip-item">
+            <span class="strip-label">DELIBERATION STATE</span>
+            <span class="delib-badge immediate" id="stripDelibBadge">IMMEDIATE</span>
+          </div>
+          <div class="strip-item timer-item">
+            <div class="strip-label-row">
+              <span class="strip-label">SCRATCHPAD TIMER</span>
+              <strong class="strip-val" id="stripScratchpadTimer">0.0s / 5s</strong>
+            </div>
+            <div class="scratchpad-progress-track">
+              <div class="scratchpad-progress-fill" id="stripScratchpadFill"></div>
+            </div>
+          </div>
+          <div class="strip-item">
+            <span class="strip-label">HINT LADDER</span>
+            <strong class="strip-val" id="stripHintBadge">Level 0 / 4</strong>
+          </div>
+        </section>
+
         <!-- PINNED LIVE HEADS-UP DISPLAY (CHANNEL 1: HUD_DISPLAY) -->
         <section class="live-hud-banner" id="liveHudBanner" hidden>
           <div class="live-hud-header">
-            <span class="hud-channel-badge">CHANNEL 1 // ACTIVE MATH STEP HUD</span>
+            <span class="hud-channel-badge">CHANNEL 1 // ACTIVE MATH STEP HUD (&lt;hud&gt;)</span>
             <span class="hud-latency-tag" id="hudRenderLatency">0 ms KaTeX Render</span>
           </div>
           <div class="live-hud-equation" id="liveHudEquation"></div>
@@ -104,11 +129,49 @@
         </div>
       </main>
 
-      <!-- MODEL PARAMETERS & VOICE CONTROLS DRAWER -->
+      <!-- MODEL PARAMETERS, VOICE CONTROLS & CHANNEL 2 TELEMETRY DRAWER -->
       <aside class="params-drawer" id="paramsDrawer">
         <div class="drawer-header">
-          <h2>Model &amp; Voice Parameters</h2>
+          <h2>Controls &amp; Live Telemetry</h2>
           <button type="button" class="close-drawer-btn" id="btnCloseParams" title="Hide panel">✕</button>
+        </div>
+
+        <!-- CHANNEL 2: LIVE COGNITIVE TELEMETRY ENGINE (<telemetry>) -->
+        <div class="telemetry-card">
+          <div class="telemetry-card-header">
+            <span class="telemetry-title">CHANNEL 2 // &lt;telemetry&gt; ENGINE</span>
+            <button type="button" class="soft-ping-btn" id="btnTriggerSoftPing" title="Test Section 10.2 Non-Intrusive Soft-Ping">
+              🔔 Test Soft-Ping
+            </button>
+          </div>
+
+          <div class="telemetry-metrics-grid">
+            <div class="t-metric">
+              <div class="t-metric-row"><span>Flow (i_flow)</span><strong id="valIFlow">85</strong></div>
+              <div class="t-bar"><div class="t-fill blue" id="fillIFlow" style="width: 85%"></div></div>
+            </div>
+            <div class="t-metric">
+              <div class="t-metric-row"><span>Efficiency (i_eff)</span><strong id="valIEff">85</strong></div>
+              <div class="t-bar"><div class="t-fill green" id="fillIEff" style="width: 85%"></div></div>
+            </div>
+            <div class="t-metric">
+              <div class="t-metric-row"><span>Regulation (i_reg)</span><strong id="valIReg">85</strong></div>
+              <div class="t-bar"><div class="t-fill blue" id="fillIReg" style="width: 85%"></div></div>
+            </div>
+            <div class="t-metric">
+              <div class="t-metric-row"><span>Cog. Load (cli)</span><strong id="valCli">35</strong></div>
+              <div class="t-bar"><div class="t-fill amber" id="fillCli" style="width: 35%"></div></div>
+            </div>
+          </div>
+
+          <div class="telemetry-json-box" id="telemetryJsonBox">
+            &lt;telemetry&gt;{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":85,"i_reg":85,"cli":35,"hint_level":0}&lt;/telemetry&gt;
+          </div>
+
+          <div class="scratchpad-toggle-row">
+            <label for="chkScratchpadPing">Auto Soft-Ping after t_expected silence</label>
+            <input type="checkbox" id="chkScratchpadPing" checked class="toggle-checkbox" />
+          </div>
         </div>
 
         <!-- 1. TUTOR VOICE PERSONA BUTTONS -->
@@ -143,11 +206,11 @@
         <!-- 4. SLIDERS FOR MODEL PARAMETERS -->
         <div class="param-group">
           <div class="param-label-row">
-            <label class="param-label" for="maxWordsSlider">Spoken Audio Ceiling (SB-02)</label>
+            <label class="param-label" for="maxWordsSlider">Spoken Audio Ceiling</label>
             <span class="slider-val" id="maxWordsValue">30 words</span>
           </div>
           <input type="range" id="maxWordsSlider" min="15" max="60" step="5" value="30" />
-          <span class="param-hint">Channel 2 spoken limit (equations render silently on the HUD).</span>
+          <span class="param-hint">Channel 3 spoken limit (&lt;hud&gt; and &lt;telemetry&gt; are stripped).</span>
         </div>
 
         <div class="param-group">
@@ -172,7 +235,7 @@
             <span class="slider-val" id="vadThresholdValue">450 ms</span>
           </div>
           <input type="range" id="vadThresholdSlider" min="250" max="900" step="50" value="450" />
-          <span class="param-hint">How long to wait after you finish speaking before replying.</span>
+          <span class="param-hint">How long to wait after you finish speaking before sending your voice turn.</span>
         </div>
 
         <!-- 5. OPTIONAL GEMINI API CONNECTION -->
@@ -188,7 +251,7 @@
               autocomplete="off"
             />
             <button type="button" class="apply-api-btn" id="btnSaveConfig">Save Key</button>
-            <span class="param-hint" id="engineStatusBadge">Active: Gemini 2.5 Flash + Dual-Channel SB-02</span>
+            <span class="param-hint" id="engineStatusBadge">Active: Gemini 2.5 Flash + Tri-Channel Engine</span>
           </div>
         </details>
       </aside>
