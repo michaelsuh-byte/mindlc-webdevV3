@@ -1,9 +1,10 @@
 /**
  * Ontario STEM Socratic Voice Tutor — Tri-Channel HUD, Telemetry & Gemini Chat Controller
- * Implements:
- *  - Section 00: Multi-Channel Decoupling (<hud>, <telemetry>, Spoken Audio)
- *  - Section 10: Off-Screen Scratchpad & Deliberation Protocol (Tier 1=5s, Tier 2=20s, Tier 3=45s, Soft-Ping, Retroactive Attribution)
- *  - Section 20: Live Telemetry JSON Engine
+ * Includes:
+ *  1. Strict Pre-Render LaTeX Screening Layer (`sanitizeLatexForHud`) + Clean History Normalization
+ *  2. Stoppable / Pausable Deliberation Timer (`⏸ Pause`, `⏹ Stop Timer`, auto-stop at t_expected)
+ *  3. High-Density Compact Chat Layout
+ *  4. Context-Aware Varied Check-In Messages (`generateContextualCheckIn`)
  */
 
 import {
@@ -13,10 +14,11 @@ import {
   STEP_TIERS,
   DEFAULT_TELEMETRY,
   STEM_SCENARIOS,
+  sanitizeLatexForHud,
   buildSystemInstruction,
   parseTriChannelPacket,
   computeRetroactiveAttribution,
-  generateScratchpadSoftPing,
+  generateContextualCheckIn,
   detectSystemCommand,
   generateOfflineSocraticResponse
 } from './svs-engine.js';
@@ -31,11 +33,14 @@ class SocraticGeminiChatApp {
     this.geminiApiKey = '';
     this.conversationHistory = [];
     this.lastSpokenBurst = 'Hi there! What Ontario high school math, physics, or chemistry problem are we solving today?';
+    this.lastStudentUtterance = '';
     this.lastHudLatex = '';
 
-    // Section 10 & 20: Telemetry & Off-Screen Scratchpad Deliberation State
+    // Section 10 & 20: Telemetry & Deliberation Timer State
     this.currentTelemetry = { ...DEFAULT_TELEMETRY };
     this.autoScratchpadPing = true;
+    this.isTimerPaused = false;
+    this.pausedElapsedSec = 0;
     this.delibStartTimestamp = 0;
     this.delibInterval = null;
     this.softPingIssuedForTurn = false;
@@ -50,6 +55,8 @@ class SocraticGeminiChatApp {
       onInterimTranscript: (interim) => {
         const input = document.getElementById('studentInput');
         if (input) input.value = interim;
+        // Reset deliberation timer while student is actively speaking words
+        this.delibStartTimestamp = performance.now();
       },
       onSpeechRecognized: (finalText) => {
         const input = document.getElementById('studentInput');
@@ -62,8 +69,7 @@ class SocraticGeminiChatApp {
         if (stopBtn) stopBtn.hidden = !speaking;
         this.updateMicStatusUI();
 
-        // Start off-screen scratchpad deliberation clock once tutor finishes speaking a problem turn
-        if (!speaking && this.hasActiveProblemTurn && !this.softPingIssuedForTurn) {
+        if (!speaking && this.hasActiveProblemTurn && !this.softPingIssuedForTurn && this.autoScratchpadPing) {
           this.startScratchpadDeliberationClock();
         }
       }
@@ -74,7 +80,7 @@ class SocraticGeminiChatApp {
 
     this.appendChatMessage(
       'svs',
-      'Hi! I am your Ontario high school STEM tutor with Tri-Channel HUD, Scratchpad Deliberation Telemetry, and natural human voice. Pick a starter problem below or ask any STEM question.',
+      'Hi! I am your Ontario high school STEM tutor with Tri-Channel Math HUD, Deliberation Telemetry, and natural human voice. Pick a starter problem below or ask any STEM question.',
       `${VOCAL_PROFILES[this.activeProfileKey].code} • ${FLIGHT_MODES[this.activeModeId].name}`,
       ''
     );
@@ -123,14 +129,37 @@ class SocraticGeminiChatApp {
       }
     });
 
-    // Test Section 10.2 Non-Intrusive Soft-Ping Button
+    // Direct Timer Pause / Resume Button on Top Strip
+    const btnPauseTimer = document.getElementById('btnPauseTimer');
+    btnPauseTimer.addEventListener('click', () => {
+      if (!this.autoScratchpadPing) {
+        this.setTimerEnabled(true);
+        return;
+      }
+      this.togglePauseDeliberationClock();
+    });
+
+    // Direct Timer Stop / Enable Button on Top Strip
+    const btnStopTimer = document.getElementById('btnStopTimer');
+    btnStopTimer.addEventListener('click', () => {
+      this.setTimerEnabled(!this.autoScratchpadPing);
+    });
+
+    // Test Context-Aware Check-In Button in Sidebar
     document.getElementById('btnTriggerSoftPing').addEventListener('click', () => {
       this.triggerScratchpadSoftPing('MANUAL_TEST');
     });
 
-    // Auto Scratchpad Soft-Ping Toggle
+    // Enable Deliberation Timer Checkbox in Sidebar
     document.getElementById('chkScratchpadPing').addEventListener('change', (e) => {
-      this.autoScratchpadPing = e.target.checked;
+      this.setTimerEnabled(e.target.checked);
+    });
+
+    // Reset timer while student is typing in the text box so it doesn't interrupt typing
+    document.getElementById('studentInput').addEventListener('keydown', () => {
+      if (this.delibInterval && !this.isTimerPaused) {
+        this.delibStartTimestamp = performance.now();
+      }
     });
 
     document.getElementById('btnClearLog').addEventListener('click', () => {
@@ -209,23 +238,89 @@ class SocraticGeminiChatApp {
   }
 
   /**
-   * Section 10: Off-Screen Scratchpad & Deliberation Timer
-   * Tracks student pause duration against Tier 1 (5s), Tier 2 (20s), or Tier 3 (45s) t_expected
+   * Enables or completely stops/disables the Deliberation Timer
    */
-  startScratchpadDeliberationClock() {
-    this.stopScratchpadDeliberationClock();
-    this.delibStartTimestamp = performance.now();
+  setTimerEnabled(enabled) {
+    this.autoScratchpadPing = Boolean(enabled);
+    const chk = document.getElementById('chkScratchpadPing');
+    if (chk) chk.checked = this.autoScratchpadPing;
 
+    const btnStop = document.getElementById('btnStopTimer');
+    const btnPause = document.getElementById('btnPauseTimer');
+    const timerEl = document.getElementById('stripScratchpadTimer');
+    const fillEl = document.getElementById('stripScratchpadFill');
+    const tierObj = STEP_TIERS[this.currentTelemetry.step_tier] || STEP_TIERS[1];
+
+    if (!this.autoScratchpadPing) {
+      this.stopScratchpadDeliberationClock();
+      this.isTimerPaused = false;
+      if (btnStop) {
+        btnStop.textContent = '▶ Enable Timer';
+        btnStop.classList.add('stopped');
+      }
+      if (btnPause) {
+        btnPause.textContent = '⏸ Pause';
+        btnPause.classList.remove('paused');
+      }
+      if (timerEl) timerEl.textContent = `OFF (${tierObj.expectedSec}s)`;
+      if (fillEl) fillEl.style.width = '0%';
+    } else {
+      if (btnStop) {
+        btnStop.textContent = '⏹ Stop Timer';
+        btnStop.classList.remove('stopped');
+      }
+      if (timerEl) timerEl.textContent = `0.0s / ${tierObj.expectedSec}s`;
+      if (this.hasActiveProblemTurn && !this.isBotSpeaking && !this.softPingIssuedForTurn) {
+        this.startScratchpadDeliberationClock();
+      }
+    }
+  }
+
+  togglePauseDeliberationClock() {
+    const btnPause = document.getElementById('btnPauseTimer');
+    if (!this.isTimerPaused) {
+      this.isTimerPaused = true;
+      this.pausedElapsedSec = this.getElapsedDeliberationSeconds();
+      this.stopScratchpadDeliberationClock();
+      if (btnPause) {
+        btnPause.textContent = '▶ Resume';
+        btnPause.classList.add('paused');
+      }
+    } else {
+      this.isTimerPaused = false;
+      if (btnPause) {
+        btnPause.textContent = '⏸ Pause';
+        btnPause.classList.remove('paused');
+      }
+      if (this.hasActiveProblemTurn && this.autoScratchpadPing) {
+        this.startScratchpadDeliberationClock(this.pausedElapsedSec);
+      }
+    }
+  }
+
+  /**
+   * Tracks student deliberation time up to t_expected, then automatically stops
+   */
+  startScratchpadDeliberationClock(resumeFromSeconds = 0) {
+    this.stopScratchpadDeliberationClock();
+    if (!this.autoScratchpadPing || this.isTimerPaused) return;
+
+    this.delibStartTimestamp = performance.now() - resumeFromSeconds * 1000;
     const tierObj = STEP_TIERS[this.currentTelemetry.step_tier] || STEP_TIERS[1];
     const expectedSec = tierObj.expectedSec;
 
     this.delibInterval = setInterval(() => {
+      if (!this.autoScratchpadPing || this.isTimerPaused) {
+        this.stopScratchpadDeliberationClock();
+        return;
+      }
+
       if (this.isBotSpeaking) {
         this.delibStartTimestamp = performance.now();
         return;
       }
 
-      const elapsedSec = (performance.now() - this.delibStartTimestamp) / 1000;
+      const elapsedSec = Math.min(expectedSec, (performance.now() - this.delibStartTimestamp) / 1000);
       const pct = Math.min(100, (elapsedSec / expectedSec) * 100);
 
       const timerEl = document.getElementById('stripScratchpadTimer');
@@ -238,16 +333,18 @@ class SocraticGeminiChatApp {
         fillEl.style.backgroundColor = elapsedSec >= expectedSec ? '#fdd663' : '#a8c7fa';
       }
 
-      // Transition visual badge to SCRATCHPAD_ACTIVE after 3 seconds of off-screen calculation
-      if (elapsedSec >= 3.0 && this.currentTelemetry.delib_state === 'IMMEDIATE') {
+      if (elapsedSec >= 4.0 && this.currentTelemetry.delib_state === 'IMMEDIATE') {
         this.currentTelemetry.delib_state = 'SCRATCHPAD_ACTIVE';
         this.updateDelibBadgeUI('SCRATCHPAD_ACTIVE');
       }
 
-      // Section 10.2: Non-Intrusive Soft-Ping when silence exceeds t_expected
-      if (this.autoScratchpadPing && !this.softPingIssuedForTurn && elapsedSec >= expectedSec) {
-        this.softPingIssuedForTurn = true;
-        this.triggerScratchpadSoftPing('AUTO_T_EXPECTED');
+      // Stop counting once t_expected is reached and issue a context-aware check-in once
+      if (elapsedSec >= expectedSec) {
+        this.stopScratchpadDeliberationClock();
+        if (!this.softPingIssuedForTurn) {
+          this.softPingIssuedForTurn = true;
+          this.triggerScratchpadSoftPing('AUTO_T_EXPECTED');
+        }
       }
     }, 200);
   }
@@ -260,25 +357,33 @@ class SocraticGeminiChatApp {
   }
 
   getElapsedDeliberationSeconds() {
+    if (this.isTimerPaused) return this.pausedElapsedSec;
     if (!this.delibStartTimestamp) return 0;
     return Math.max(0, (performance.now() - this.delibStartTimestamp) / 1000);
   }
 
   /**
-   * Section 10.2: Issues the Non-Intrusive Soft-Ping when silence exceeds t_expected
+   * Issues a context-aware, varied supportive check-in tailored to the current conversation
    */
   triggerScratchpadSoftPing(reason = 'AUTO_T_EXPECTED') {
-    const pingPacket = generateScratchpadSoftPing(this.currentTelemetry.step_tier, this.lastHudLatex);
-    this.currentTelemetry = pingPacket.telemetry;
+    const checkInPacket = generateContextualCheckIn({
+      activeTier: this.currentTelemetry.step_tier,
+      lastHudLatex: this.lastHudLatex,
+      lastTutorQuestion: this.lastSpokenBurst,
+      lastStudentMessage: this.lastStudentUtterance,
+      modeId: this.activeModeId
+    });
+
+    this.currentTelemetry = checkInPacket.telemetry;
     this.updateTelemetryUI(this.currentTelemetry);
 
     const profile = VOCAL_PROFILES[this.activeProfileKey];
     const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
-    const footerTag = `${profile.code} (${voiceName}) • Soft-Ping (${reason === 'MANUAL_TEST' ? 'Test' : `t_exp Exceeded`})`;
+    const footerTag = `${profile.code} (${voiceName}) • Check-In (${reason === 'MANUAL_TEST' ? 'Test' : 'Deliberation Pause'})`;
 
-    this.appendChatMessage('svs', pingPacket.spokenText, footerTag, '');
-    this.lastSpokenBurst = pingPacket.spokenText;
-    this.avionics.speakCalibratedBurst(pingPacket.spokenText, this.activeProfileKey);
+    this.appendChatMessage('svs', checkInPacket.spokenText, footerTag, '');
+    this.lastSpokenBurst = checkInPacket.spokenText;
+    this.avionics.speakCalibratedBurst(checkInPacket.spokenText, this.activeProfileKey);
   }
 
   populateVoiceDropdown() {
@@ -374,12 +479,20 @@ class SocraticGeminiChatApp {
   async processStudentTransmission(utterance) {
     const pauseSeconds = this.getElapsedDeliberationSeconds();
     this.stopScratchpadDeliberationClock();
+    this.isTimerPaused = false;
+    this.pausedElapsedSec = 0;
+    const btnPause = document.getElementById('btnPauseTimer');
+    if (btnPause) {
+      btnPause.textContent = '⏸ Pause';
+      btnPause.classList.remove('paused');
+    }
+
     this.softPingIssuedForTurn = false;
+    this.lastStudentUtterance = utterance;
     this.avionics.stopSpeaking('NEW_STUDENT_TURN');
 
     this.appendChatMessage('student', utterance);
 
-    // Compute Section 10.3 Retroactive Attribution baseline from pause duration & utterance
     const retroactiveTelemetry = computeRetroactiveAttribution(
       utterance,
       pauseSeconds,
@@ -401,8 +514,15 @@ class SocraticGeminiChatApp {
       thinkingEl.remove();
 
       if (llmReply) {
+        // Parse and sanitize BEFORE storing in history so raw `$` signs never pollute future turns!
+        const parsedPacket = parseTriChannelPacket(llmReply, this.maxWords, retroactiveTelemetry);
+        const cleanAssistantHistoryText =
+          (parsedPacket.hudLatex ? `<hud>${parsedPacket.hudLatex}</hud>\n` : '') +
+          `<telemetry>${JSON.stringify(parsedPacket.telemetry)}</telemetry>\n` +
+          parsedPacket.spokenText;
+
         this.conversationHistory.push({ role: 'user', text: utterance });
-        this.conversationHistory.push({ role: 'svs', text: llmReply });
+        this.conversationHistory.push({ role: 'svs', text: cleanAssistantHistoryText });
         this.hasActiveProblemTurn = true;
         this.emitTriChannelResponse(llmReply, {
           speak: true,
@@ -427,7 +547,7 @@ class SocraticGeminiChatApp {
     const sysPrompt = buildSystemInstruction(this.activeProfileKey, this.activeModeId, this.maxWords);
     const tierObj = STEP_TIERS[this.currentTelemetry.step_tier] || STEP_TIERS[1];
     const annotatedMessage =
-      pauseSeconds >= 4
+      pauseSeconds >= 5
         ? `[Student Deliberation Pause: ${pauseSeconds.toFixed(1)}s | Previous Step Tier: ${tierObj.tier} (t_expected=${tierObj.expectedSec}s)]\n${utterance}`
         : utterance;
 
@@ -464,23 +584,15 @@ class SocraticGeminiChatApp {
     return row;
   }
 
-  /**
-   * CAN-ON-SVS-PROTOTYPE TRI-CHANNEL DISPATCH:
-   *  - Channel 1 (<hud>): Instant 0ms KaTeX render to DOM
-   *  - Channel 2 (<telemetry>): Updates live Cognitive Telemetry & Scratchpad Tier clock
-   *  - Channel 3 (Spoken Audio): Stripped of <hud> & <telemetry>, routed to Studio Neural Voice
-   */
   emitTriChannelResponse(rawText, options = { speak: true, badge: '', fallbackTelemetry: null }) {
     const t0 = performance.now();
     const packet = parseTriChannelPacket(rawText, this.maxWords, options.fallbackTelemetry);
 
-    // 1. Channel 1: Update Pinned Live HUD Banner immediately if packet includes <hud> LaTeX
     if (packet.hudLatex) {
       this.lastHudLatex = packet.hudLatex;
       this.updatePinnedLiveHud(packet.hudLatex, performance.now() - t0);
     }
 
-    // 2. Channel 2: Update Live Telemetry Dashboard & Complexity Tier Latency Envelope
     this.currentTelemetry = packet.telemetry;
     this.updateTelemetryUI(this.currentTelemetry);
 
@@ -492,15 +604,13 @@ class SocraticGeminiChatApp {
       ? `${profile.code} (${voiceName}) • ${options.badge}`
       : `${profile.code} (${voiceName}) • ${mode.name} • ${tierLabel}`;
 
-    // 3. Render chat bubble with silent HUD Math Card + spoken inquiry text
     this.appendChatMessage('svs', packet.spokenText, footerTag, packet.hudLatex);
 
-    // 4. Channel 3: Route ONLY the stripped spoken inquiry to the Neural Voice synthesizer
     if (packet.spokenText) {
       this.lastSpokenBurst = packet.spokenText;
       if (options.speak) {
         this.avionics.speakCalibratedBurst(packet.spokenText, this.activeProfileKey);
-      } else if (this.hasActiveProblemTurn) {
+      } else if (this.hasActiveProblemTurn && this.autoScratchpadPing) {
         this.startScratchpadDeliberationClock();
       }
     }
@@ -509,25 +619,27 @@ class SocraticGeminiChatApp {
   updateTelemetryUI(telemetry) {
     const tierObj = STEP_TIERS[telemetry.step_tier] || STEP_TIERS[1];
 
-    // Update top strip
     const tierBadge = document.getElementById('stripTierBadge');
     if (tierBadge) {
-      tierBadge.textContent = `TIER ${tierObj.tier} (t_exp = ${tierObj.expectedSec}s)`;
+      tierBadge.textContent = `TIER ${tierObj.tier} (${tierObj.expectedSec}s)`;
     }
 
     this.updateDelibBadgeUI(telemetry.delib_state);
 
     const timerEl = document.getElementById('stripScratchpadTimer');
     const fillEl = document.getElementById('stripScratchpadFill');
-    if (timerEl) timerEl.textContent = `0.0s / ${tierObj.expectedSec}s`;
+    if (timerEl) {
+      timerEl.textContent = this.autoScratchpadPing
+        ? `0.0s / ${tierObj.expectedSec}s`
+        : `OFF (${tierObj.expectedSec}s)`;
+    }
     if (fillEl) fillEl.style.width = '0%';
 
     const hintBadge = document.getElementById('stripHintBadge');
     if (hintBadge) {
-      hintBadge.textContent = `Level ${telemetry.hint_level} / 4`;
+      hintBadge.textContent = `${telemetry.hint_level} / 4`;
     }
 
-    // Update sidebar Channel 2 gauges
     const setGauge = (valId, fillId, val) => {
       const vEl = document.getElementById(valId);
       const fEl = document.getElementById(fillId);
@@ -570,15 +682,25 @@ class SocraticGeminiChatApp {
     this.renderLatexElement(eqContainer, latexStr);
 
     if (latencyTag) {
-      latencyTag.textContent = `${Math.max(0.2, elapsedMs).toFixed(1)} ms KaTeX Render`;
+      latencyTag.textContent = `${Math.max(0.2, elapsedMs).toFixed(1)} ms`;
     }
   }
 
-  renderLatexElement(targetEl, latexStr) {
+  /**
+   * Passes any math string through `sanitizeLatexForHud` BEFORE calling KaTeX
+   * so `$` or `$$` delimiters never cause a KaTeX error or render raw `$` signs.
+   */
+  renderLatexElement(targetEl, rawLatexStr) {
+    const screenedLatex = sanitizeLatexForHud(rawLatexStr);
+    if (!screenedLatex) {
+      targetEl.textContent = '';
+      return;
+    }
+
     if (window.katex) {
       try {
-        window.katex.render(latexStr, targetEl, {
-          displayMode: true,
+        window.katex.render(screenedLatex, targetEl, {
+          displayMode: false,
           throwOnError: false
         });
         return;
@@ -586,7 +708,7 @@ class SocraticGeminiChatApp {
         console.warn('KaTeX render fallback:', err);
       }
     }
-    targetEl.textContent = latexStr;
+    targetEl.textContent = screenedLatex;
   }
 
   appendChatMessage(role, spokenText, footerText = '', hudLatex = '') {
@@ -602,23 +724,23 @@ class SocraticGeminiChatApp {
     bubble.className = 'msg-bubble';
 
     if (role === 'svs' && hudLatex) {
-      const hudCard = document.createElement('div');
-      hudCard.className = 'hud-math-card';
+      const screened = sanitizeLatexForHud(hudLatex);
+      if (screened) {
+        const hudCard = document.createElement('div');
+        hudCard.className = 'hud-math-card';
 
-      const hudTag = document.createElement('span');
-      hudTag.className = 'hud-math-tag';
-      hudTag.textContent = 'HUD // ACTIVE EQUATION STEP';
-      hudCard.appendChild(hudTag);
+        const mathBody = document.createElement('div');
+        this.renderLatexElement(mathBody, screened);
+        hudCard.appendChild(mathBody);
 
-      const mathBody = document.createElement('div');
-      this.renderLatexElement(mathBody, hudLatex);
-      hudCard.appendChild(mathBody);
-
-      bubble.appendChild(hudCard);
+        bubble.appendChild(hudCard);
+      }
     }
 
+    // Screen spokenText so no stray `$` signs ever appear in chat text
+    const cleanVisibleText = String(spokenText || '').replace(/\$/g, '').trim();
     const p = document.createElement('div');
-    p.textContent = spokenText;
+    p.textContent = cleanVisibleText;
     bubble.appendChild(p);
 
     if (role === 'svs') {
@@ -634,7 +756,7 @@ class SocraticGeminiChatApp {
       replayBtn.className = 'speak-again-btn';
       replayBtn.textContent = '🔊 Listen';
       replayBtn.addEventListener('click', () => {
-        this.avionics.speakCalibratedBurst(spokenText, this.activeProfileKey);
+        this.avionics.speakCalibratedBurst(cleanVisibleText, this.activeProfileKey);
       });
       footer.appendChild(replayBtn);
 
@@ -664,7 +786,7 @@ class SocraticGeminiChatApp {
       micBtnLabel.textContent = 'Speak';
       statusDot.className = 'status-dot';
       vadStateTag.textContent = this.isBotSpeaking
-        ? 'Tutor speaking (HUD & Telemetry updated silently)...'
+        ? 'Tutor speaking...'
         : 'Mic off — click Speak to talk with the tutor';
       return;
     }

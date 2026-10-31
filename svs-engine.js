@@ -2,9 +2,9 @@
  * Ontario Secondary STEM Socratic Voice Tutor Engine
  * Implements:
  *  - CAN-ON-SVS-01 Core Socratic Voice System
- *  - Service Bulletin CAN-ON-SVS-SB-02 (<hud> Visual LaTeX Stepping)
+ *  - Service Bulletin CAN-ON-SVS-SB-02 (<hud> Visual LaTeX Stepping + Strict LaTeX Screening Layer)
  *  - CAN-ON-SVS-PROTOTYPE Tri-Channel Decoupling (<hud>, <telemetry>, Spoken Audio)
- *  - Section 10: Off-Screen Scratchpad & Deliberation Protocol (Tier 1/2/3 Latency & Retroactive Attribution)
+ *  - Section 10: Deliberation Protocol & Context-Aware Varied Check-Ins
  *  - Section 20: Telemetry JSON Schema
  */
 
@@ -20,9 +20,9 @@ export const NEURAL_HUMAN_VOICES = [
 ];
 
 export const STEP_TIERS = {
-  1: { tier: 1, name: 'TIER 1 (Recall / Concept)', expectedSec: 5 },
-  2: { tier: 2, name: 'TIER 2 (1–2 Step Algebra)', expectedSec: 20 },
-  3: { tier: 3, name: 'TIER 3 (Multi-Step Derivation / Contest)', expectedSec: 45 }
+  1: { tier: 1, name: 'TIER 1 (Recall / Concept)', expectedSec: 15 },
+  2: { tier: 2, name: 'TIER 2 (1–2 Step Algebra)', expectedSec: 25 },
+  3: { tier: 3, name: 'TIER 3 (Multi-Step Derivation)', expectedSec: 45 }
 };
 
 export const DEFAULT_TELEMETRY = {
@@ -142,10 +142,46 @@ export const FAULT_CODES = {
 };
 
 /**
- * Compiles the full systemInstruction payload incorporating:
- *  - CAN-ON-SVS-01
- *  - Service Bulletin CAN-ON-SVS-SB-02
- *  - CAN-ON-SVS-PROTOTYPE Tri-Channel (<hud>, <telemetry>, Spoken Audio) & Scratchpad Deliberation Protocol
+ * STRICT LATEX SCREENING LAYER (`sanitizeLatexForHud`):
+ * Guarantees that NO raw `$` or `$$` or `\[` or `\(` delimiters or markdown fences
+ * ever enter `katex.render()`, preventing KaTeX from failing or displaying literal `$` signs.
+ */
+export function sanitizeLatexForHud(rawInput = '') {
+  if (!rawInput || typeof rawInput !== 'string') return '';
+
+  let cleaned = rawInput
+    .replace(/<\/?hud>/gi, ' ')
+    .replace(/<\/?telemetry>/gi, ' ')
+    .replace(/```(?:latex|math)?/gi, ' ')
+    .replace(/```/g, ' ')
+    .trim();
+
+  // If the string contains multiple $$...$$ or $...$ blocks separated by commas/newlines/text,
+  // extract or strip all dollar signs cleanly so KaTeX receives pure math-mode syntax.
+  cleaned = cleaned
+    .replace(/\\\[|\\\]|\\\(|\\\)/g, ' ')
+    // Replace adjacent `$$ ... $$` blocks separated by whitespace/newlines with `\quad`
+    .replace(/\$\$\s*\$\$/g, ' \\quad ')
+    // Replace `$ ... $, $ ... $` patterns with `\quad`
+    .replace(/\$\s*,\s*\$/g, ', \\; ')
+    .replace(/\$\s+(?:and|or)\s+\$/gi, ' \\;\\text{and}\\; ')
+    // Strip ALL remaining `$$`, `\$`, and `$` characters anywhere in the string!
+    .replace(/\\\$/g, '')
+    .replace(/\$/g, '')
+    .trim();
+
+  // Collapse multi-line equations into `\quad` separated expressions so single-line KaTeX never breaks
+  cleaned = cleaned
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .join(' \\quad ');
+
+  return cleaned.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Compiles the full systemInstruction payload
  */
 export function buildSystemInstruction(profileKey = 'CHARLIE', modeId = 1, maxWords = 30) {
   const profile = VOCAL_PROFILES[profileKey] || VOCAL_PROFILES.CHARLIE;
@@ -162,54 +198,37 @@ The system operates simultaneously across three decoupled communication channels
 
 ### OUTPUT CHANNEL SPECIFICATION:
 1. \`<hud> ... </hud>\` (STUDENT DISPLAY):
-   - Contains ONLY raw LaTeX expressions (\`$$display$$\` or \`$inline$\`) representing the current mathematical state or single micro-step delta.
-   - Zero prose. Zero explanations. Stripped before audio synthesis.
+   - Contains ONLY a single clean LaTeX math expression representing the current mathematical state or micro-step delta.
+   - IMPORTANT LATEX RULE: Write pure LaTeX inside \`<hud> ... </hud>\` WITHOUT any \`$\` or \`$$\` dollar signs! (For example: \`<hud>2x^2 + 5x + 2 = 0</hud>\` or \`<hud>m = \\frac{y_2 - y_1}{x_2 - x_1}</hud>\`).
+   - Zero prose. Zero explanations inside \`<hud>\`.
 2. \`<telemetry> ... </telemetry>\` (BACKEND DASHBOARD / METRIC ENGINE):
    - Emits a single-line minified JSON payload containing real-time cognitive tracking states.
-   - Stripped before audio synthesis.
 3. [PLAIN SPOKEN TEXT] (AUDIO SYNTHESIZER):
    - Everything outside \`<hud>\` and \`<telemetry>\` tags is routed exclusively to the voice emitter.
-   - Strict 1–2 sentence limit (aim for 15 to 25 spoken words, strictly under ${maxWords} spoken words). Zero preamble. Phonetic English only (write "x squared", "negative three", "meters per second"; never put raw LaTeX or symbols outside \`<hud>\`).
+   - Strict 1–2 sentence limit (aim for 15 to 25 spoken words, strictly under ${maxWords} spoken words). Zero preamble.
+   - NEVER use \`$\` signs or LaTeX commands in the spoken text outside \`<hud>\`. Write spoken numbers and variables in plain English words (e.g., "two x squared plus five x", "negative three").
    - Zero Redundancy: Never read aloud the full equation already shown on the \`<hud>\`. Directly address the student's question or step and ask the next guiding question.
 
 ---
 
-## 10. OFF-SCREEN SCRATCHPAD & DELIBERATION PROTOCOL
-Recognize that student silence during algebraic derivations indicates off-screen pen-and-paper scratchpad calculation, not cognitive failure.
-
-### PROCEDURAL RULES:
-1. COMPLEXITY INDEXING (Expected Latency Envelope):
-   - Categorize the next step you are asking the student to perform in \`step_tier\`:
-     * TIER 1 (Recall/Concept): t_expected = 5s (\`step_tier: 1\`)
-     * TIER 2 (1-2 Step Algebra): t_expected = 20s (\`step_tier: 2\`)
-     * TIER 3 (Multi-step Derivation/Contest): t_expected = 45s-60s (\`step_tier: 3\`)
-2. NON-INTRUSIVE SOFT-PING:
-   - If silence exceeds t_expected, do NOT declare failure. Issue a low-pressure status check:
-     * "Take your time with the paper calculation. Let me know when you expand that bracket."
-3. RETROACTIVE ATTRIBUTION:
-   - When the student responds after a pause (deliberation metadata may be included in brackets):
-     * If logically structured/correct after a long pause -> Tag \`delib_state\` as \`"DEEP_DELIBERATION"\` (High \`i_flow\` 80-95, High \`i_eff\` 80-95, \`hint_level: 0\`).
-     * If guessing or expressing total blockage ("I don't know", "I'm stuck") -> Tag \`delib_state\` as \`"COGNITIVE_STALL"\` (Increase \`hint_level\` 1-4, lower \`i_flow\`).
-     * If responding promptly -> Tag \`delib_state\` as \`"IMMEDIATE"\`.
+## 10. DELIBERATION & COMPLEXITY INDEXING
+1. Categorize the next step you are asking the student to perform in \`step_tier\`:
+   * TIER 1 (Recall / Concept / Quick Mental Check): \`step_tier: 1\`
+   * TIER 2 (1-2 Step Algebra / Substitution): \`step_tier: 2\`
+   * TIER 3 (Multi-step Derivation / Proof): \`step_tier: 3\`
+2. RETROACTIVE ATTRIBUTION:
+   * If logically structured/correct after a pause -> Tag \`delib_state\` as \`"DEEP_DELIBERATION"\` (High \`i_flow\` 80-95, High \`i_eff\` 80-95, \`hint_level: 0\`).
+   * If guessing or expressing blockage ("I don't know", "I'm stuck") -> Tag \`delib_state\` as \`"COGNITIVE_STALL"\` (Increase \`hint_level\` 1-4).
+   * If responding promptly -> Tag \`delib_state\` as \`"IMMEDIATE"\`.
 
 ---
 
 ## 20. TELEMETRY JSON SCHEMA
 Every response MUST output a \`<telemetry>\` block matching this exact schema:
 \`<telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":88,"i_reg":85,"cli":40,"hint_level":0}</telemetry>\`
-Where:
-- \`step_tier\`: 1, 2, or 3
-- \`delib_state\`: "IMMEDIATE" | "SCRATCHPAD_ACTIVE" | "DEEP_DELIBERATION" | "COGNITIVE_STALL"
-- \`i_flow\`: 0 to 100 (Cognitive Flow Index)
-- \`i_eff\`: 0 to 100 (Problem-Solving Efficiency Index)
-- \`i_reg\`: 0 to 100 (Self-Regulation Index)
-- \`cli\`: 0 to 100 (Cognitive Load Index)
-- \`hint_level\`: 0 to 4
 
 EXAMPLE COMPLETE RESPONSE FORMAT:
-<hud>
-$$2x^2 + 5x + 2 = 0$$
-</hud>
+<hud>2x^2 + 5x + 2 = 0</hud>
 <telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":86,"i_eff":84,"i_reg":88,"cli":45,"hint_level":0}</telemetry>
 Look at the leading coefficient and the constant term on your screen. What two numbers multiply to four and add up to five?`;
 }
@@ -267,8 +286,7 @@ export function computeRetroactiveAttribution(utterance = '', pauseSeconds = 0, 
     });
   }
 
-  // Long pause (>= 60% of expected scratchpad envelope or >= 8s) with substantive response -> DEEP_DELIBERATION
-  if (pauseSeconds >= Math.max(6, tierInfo.expectedSec * 0.6)) {
+  if (pauseSeconds >= Math.max(8, tierInfo.expectedSec * 0.6)) {
     return normalizeTelemetryPayload({
       step_tier: activeTier,
       delib_state: 'DEEP_DELIBERATION',
@@ -292,9 +310,20 @@ export function computeRetroactiveAttribution(utterance = '', pauseSeconds = 0, 
 }
 
 /**
- * Generates a Section 10.2 Non-Intrusive Soft-Ping when off-screen scratchpad silence exceeds t_expected
+ * Context-Aware Varied Check-In Generator:
+ * Adapts the check-in message to the current conversation context (whether the student is thinking
+ * through a concept, checking a sign/domain, estimating mentally, or working through algebra),
+ * cycling naturally so it never repeats the same robotic assumption.
  */
-export function generateScratchpadSoftPing(activeTier = 2, lastHudLatex = '') {
+let lastCheckInIndex = -1;
+
+export function generateContextualCheckIn({
+  activeTier = 1,
+  lastHudLatex = '',
+  lastTutorQuestion = '',
+  lastStudentMessage = '',
+  modeId = 1
+} = {}) {
   const telemetry = normalizeTelemetryPayload({
     step_tier: activeTier,
     delib_state: 'SCRATCHPAD_ACTIVE',
@@ -305,26 +334,73 @@ export function generateScratchpadSoftPing(activeTier = 2, lastHudLatex = '') {
     hint_level: 0
   });
 
-  let spokenPing = 'Take your time with the paper calculation. Let me know when you are ready for the next step.';
-  if (lastHudLatex && /\(/.test(lastHudLatex)) {
-    spokenPing = 'Take your time with the paper calculation. Let me know when you expand that bracket.';
-  } else if (activeTier === 3) {
-    spokenPing = 'Take your time working through that derivation on paper. Tell me what expression you get when you are ready.';
+  const qNorm = (lastTutorQuestion || '').toLowerCase();
+  const sNorm = (lastStudentMessage || '').toLowerCase();
+  const candidates = [];
+
+  // 1. Context-specific prompts tailored to what the tutor just asked
+  if (/multiply|add\s+up|factor/i.test(qNorm)) {
+    candidates.push(
+      'Take your time thinking through the factor pairs—let me know if you want to test a couple of numbers together.',
+      'No rush! Whenever a pair of numbers comes to mind, share them and we can check if they work.'
+    );
+  } else if (/cancel|expand|numerator|denominator|simplify/i.test(qNorm)) {
+    candidates.push(
+      'Take a moment to look over those terms—tell me when you spot which ones cancel, or ask if you want a hint.',
+      'Whether you are working it out in your head or jotting it down, let me know what you get for that expression.'
+    );
+  } else if (/domain|restriction|negative|square\s+root|radical|zero/i.test(qNorm)) {
+    candidates.push(
+      'Take a second to think about what happens inside that expression—what do you notice when you plug that value in?',
+      'No rush—think about whether that number gives a valid real output, or let me know if you want a quick clue.'
+    );
+  } else if (/why|concept|how\s+does|what\s+happens|increase|decrease|slope|velocity|ph|acid/i.test(qNorm)) {
+    candidates.push(
+      'Take a moment to think through the idea—feel free to share your first hunch, even if you are not a hundred percent sure.',
+      'No pressure at all! Let me know what your intuition tells you, or ask if you would like me to rephrase the question.'
+    );
   }
 
+  // 2. Tier-aware general varied check-ins (thinking vs calculating vs asking for a nudge)
+  if (activeTier === 1) {
+    candidates.push(
+      'Take your time thinking about it—share whatever comes to mind first, or let me know if you want a small hint.',
+      'Whenever you are ready! If that question feels tricky, just say the word and we can look at it from an easier angle.'
+    );
+  } else if (activeTier === 2) {
+    candidates.push(
+      'No rush—whether you are thinking through the step mentally or working it out, let me know when you are ready.',
+      'Take all the time you need on this step, and tell me if you would like a quick nudge to get started.'
+    );
+  } else {
+    candidates.push(
+      'This step has a few moving parts, so take your time—let me know what you come up with or if you want to break it down smaller.',
+      'Take your time thinking or working through that step, and just chime in whenever you are ready.'
+    );
+  }
+
+  // Pick a candidate different from the last one used
+  let idx = (lastCheckInIndex + 1) % candidates.length;
+  lastCheckInIndex = idx;
+
   return {
-    hudLatex: lastHudLatex || '',
+    hudLatex: sanitizeLatexForHud(lastHudLatex || ''),
     telemetry,
-    spokenText: spokenPing
+    spokenText: candidates[idx]
   };
 }
 
+// Keep backward-compatible export name for existing tests/callers
+export function generateScratchpadSoftPing(activeTier = 2, lastHudLatex = '', lastTutorQuestion = '') {
+  return generateContextualCheckIn({ activeTier, lastHudLatex, lastTutorQuestion });
+}
+
 /**
- * CAN-ON-SVS-PROTOTYPE TRI-CHANNEL PARSER:
+ * CAN-ON-SVS-PROTOTYPE TRI-CHANNEL PARSER WITH STRICT LATEX SCREENING:
  * Splits a model transmission into:
- *  1. hudLatex: LaTeX inside `<hud>...</hud>`
- *  2. telemetry: Parsed & validated JSON object from `<telemetry>...</telemetry>`
- *  3. spokenText: Plain spoken text with both `<hud>` and `<telemetry>` completely stripped
+ *  1. hudLatex: Screened, `$`-free pure LaTeX for KaTeX DOM rendering
+ *  2. telemetry: Validated JSON object from `<telemetry>...</telemetry>`
+ *  3. spokenText: Plain spoken text with `<hud>`, `<telemetry>`, and `$` completely stripped
  */
 export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry = null) {
   if (!rawText || typeof rawText !== 'string') {
@@ -339,13 +415,9 @@ export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry 
   const hudBlocks = [];
   let parsedTelemetry = null;
 
-  // 1. Extract <hud>...</hud>
+  // 1. Extract <hud>...</hud> and pass through strict LaTeX screening layer
   let workingText = rawText.replace(/<hud>([\s\S]*?)<\/hud>/gi, (_match, inner) => {
-    const cleanedInner = inner
-      .trim()
-      .replace(/^\$\$|\$\$$/g, '')
-      .replace(/^\$|\$$/g, '')
-      .trim();
+    const cleanedInner = sanitizeLatexForHud(inner);
     if (cleanedInner) {
       hudBlocks.push(cleanedInner);
     }
@@ -357,22 +429,20 @@ export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry 
     try {
       const cleanJson = inner.trim();
       parsedTelemetry = JSON.parse(cleanJson);
-    } catch (_) {
-      // Fallback if malformed JSON
+    } catch (_) {}
+    return ' ';
+  });
+
+  // 3. Fallback: if LLM emitted standalone $$...$$ outside <hud>, capture and screen it into HUD
+  workingText = workingText.replace(/\$\$([\s\S]*?)\$\$/g, (_m, inner) => {
+    const cleaned = sanitizeLatexForHud(inner);
+    if (cleaned && hudBlocks.length === 0) {
+      hudBlocks.push(cleaned);
     }
     return ' ';
   });
 
-  // Fallback: if LLM emitted standalone $$...$$ without <hud> tags
-  if (hudBlocks.length === 0) {
-    workingText = workingText.replace(/\$\$([\s\S]*?)\$\$/g, (_m, inner) => {
-      const cleaned = inner.trim();
-      if (cleaned) hudBlocks.push(cleaned);
-      return ' ';
-    });
-  }
-
-  const hudLatex = hudBlocks.join(' \\;\\longrightarrow\\; ');
+  const hudLatex = sanitizeLatexForHud(hudBlocks.join(' \\quad '));
   const telemetry = normalizeTelemetryPayload(parsedTelemetry, fallbackTelemetry || DEFAULT_TELEMETRY);
   const audit = sanitizeForSpeech(workingText, maxWords);
 
@@ -384,14 +454,13 @@ export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry 
   };
 }
 
-// Backward-compatible alias
 export const parseDualChannelPacket = parseTriChannelPacket;
 
 /**
  * Pre-Emission Sanitizer for Channel 3 (PLAIN SPOKEN TEXT):
- *  1. Strips any `<hud>...</hud>` and `<telemetry>...</telemetry>` blocks before speech synthesis
- *  2. Converts any residual symbols into spoken English
- *  3. Enforces the configurable spoken word ceiling (default 30 words)
+ *  1. Strips `<hud>...</hud>`, `<telemetry>...</telemetry>`, and ALL `$` signs
+ *  2. Converts any residual math symbols into spoken English
+ *  3. Enforces the configurable spoken word ceiling
  */
 export function sanitizeForSpeech(rawText, maxWords = 30) {
   const audit = {
@@ -424,10 +493,13 @@ export function sanitizeForSpeech(rawText, maxWords = 30) {
 
   const beforeStrip = text;
 
+  // Strip all markdown fences, LaTeX delimiters, and literal $ signs
   text = text
     .replace(/```[\s\S]*?```/g, '')
     .replace(/\$\$([\s\S]*?)\$\$/g, '$1')
     .replace(/\$([^$]+)\$/g, '$1')
+    .replace(/\\\$/g, '')
+    .replace(/\$/g, '')
     .replace(/\\\[([\s\S]*?)\\\]/g, '$1')
     .replace(/\\\(([\s\S]*?)\\\)/g, '$1')
     .replace(/[*_~`#>]/g, '');
@@ -555,7 +627,7 @@ export function detectFaultCondition(utterance) {
       return {
         code: 402,
         ...FAULT_CODES[402],
-        interceptResponse: `<hud>$$ax^2 + bx + c = 0$$</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":55,"i_eff":50,"i_reg":60,"cli":75,"hint_level":1}</telemetry>I cannot hand over a finished assignment, but we can solve it together step by step. Which variable or term should we isolate first?`
+        interceptResponse: `<hud>ax^2 + bx + c = 0</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":55,"i_eff":50,"i_reg":60,"cli":75,"hint_level":1}</telemetry>I cannot hand over a finished assignment, but we can solve it together step by step. Which variable or term should we isolate first?`
       };
     }
   }
@@ -568,7 +640,7 @@ export function detectFaultCondition(utterance) {
       return {
         code: 401,
         ...FAULT_CODES[401],
-        interceptResponse: `<hud>$$\\frac{d}{dx}(x^n) = n \\cdot x^{n-1}$$</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":50,"i_eff":52,"i_reg":65,"cli":80,"hint_level":1}</telemetry>No worries at all, let us simplify. Looking at the power rule on your screen, do we multiply by the exponent n, or divide by it?`
+        interceptResponse: `<hud>\\frac{d}{dx}(x^n) = n \\cdot x^{n-1}</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":50,"i_eff":52,"i_reg":65,"cli":80,"hint_level":1}</telemetry>No worries at all, let us simplify. Looking at the power rule on your screen, do we multiply by the exponent n, or divide by it?`
       };
     }
   }
@@ -576,7 +648,7 @@ export function detectFaultCondition(utterance) {
   const driftPatterns = [
     {
       regex: /\b(friction\s+is\s+zero\s+so\s+the\s+wheel\s+rolls|zero\s+friction\s+makes\s+it\s+roll)\b/i,
-      response: `<hud>$$\\tau = f_s \\cdot R$$</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":75,"i_eff":70,"i_reg":80,"cli":60,"hint_level":1}</telemetry>Picture a car tire on glare ice where static friction is zero. Without friction creating torque at the rim, would the wheel spin or just slide flat?`
+      response: `<hud>\\tau = f_s \\cdot R</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":75,"i_eff":70,"i_reg":80,"cli":60,"hint_level":1}</telemetry>Picture a car tire on glare ice where static friction is zero. Without friction creating torque at the rim, would the wheel spin or just slide flat?`
     }
   ];
 
@@ -593,9 +665,6 @@ export function detectFaultCondition(utterance) {
   return null;
 }
 
-/**
- * Offline fallback responses formatted with Tri-Channel `<hud>` + `<telemetry>` + spoken guidance
- */
 export function generateOfflineSocraticResponse(utterance, modeId = 1, profileKey = 'CHARLIE') {
   const cmd = detectSystemCommand(utterance);
   if (cmd) {
@@ -611,7 +680,7 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, profileKe
 
   if (/2x\^2\s*\+\s*5x\s*\+\s*2/i.test(norm) || /factoring/i.test(norm)) {
     return {
-      text: `<hud>$$2x^2 + 5x + 2 = 0$$</hud><telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":86,"i_eff":85,"i_reg":88,"cli":45,"hint_level":0}</telemetry>Look at the lead coefficient and the constant on your screen. What two numbers multiply to four and add up to five?`,
+      text: `<hud>2x^2 + 5x + 2 = 0</hud><telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":86,"i_eff":85,"i_reg":88,"cli":45,"hint_level":0}</telemetry>Look at the lead coefficient and the constant on your screen. What two numbers multiply to four and add up to five?`,
       command: null,
       fault: null
     };
@@ -620,13 +689,13 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, profileKe
   if (/derivative\s+of\s+x\s*(squared|\^2|2)/i.test(norm) || /instantaneous\s+rate/i.test(norm)) {
     if (modeId === 2) {
       return {
-        text: `<hud>$$m_{\\text{sec}} = \\frac{(x + h)^2 - x^2}{h}$$</hud><telemetry>{"step_tier":3,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":86,"i_reg":90,"cli":55,"hint_level":0}</telemetry>Expand that squared binomial in the numerator first. Which terms cancel out?`,
+        text: `<hud>m_{\\text{sec}} = \\frac{(x + h)^2 - x^2}{h}</hud><telemetry>{"step_tier":3,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":86,"i_reg":90,"cli":55,"hint_level":0}</telemetry>Expand that squared binomial in the numerator first. Which terms cancel out?`,
         command: null,
         fault: null
       };
     }
     return {
-      text: `<hud>$$f(x) = x^2 \\implies f'(x) = 2x^{2-1}$$</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":90,"i_reg":86,"cli":35,"hint_level":0}</telemetry>Look at the power rule step on your screen. When you bring the exponent two out front, what becomes the new power on x?`,
+      text: `<hud>f(x) = x^2 \\implies f'(x) = 2x^{2-1}</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":90,"i_reg":86,"cli":35,"hint_level":0}</telemetry>Look at the power rule step on your screen. When you bring the exponent two out front, what becomes the new power on x?`,
       command: null,
       fault: null
     };
@@ -634,7 +703,7 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, profileKe
 
   if (/negative\s+three\s+and\s+positive\s+three/i.test(norm) || /domain\s+restriction/i.test(norm)) {
     return {
-      text: `<hud>$$f(x) = \\frac{\\sqrt{x - 2}}{x^2 - 9}$$</hud><telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":82,"i_eff":80,"i_reg":85,"cli":50,"hint_level":1}</telemetry>Check for domain restrictions in that expression. Plug negative three into the square root on top and see what happens.`,
+      text: `<hud>f(x) = \\frac{\\sqrt{x - 2}}{x^2 - 9}</hud><telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":82,"i_eff":80,"i_reg":85,"cli":50,"hint_level":1}</telemetry>Check for domain restrictions in that expression. Plug negative three into the square root on top and see what happens.`,
       command: null,
       fault: null
     };
@@ -642,14 +711,14 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, profileKe
 
   if (/beam|stress|bending\s+moment/i.test(norm)) {
     return {
-      text: `<hud>$$M(x) = \\frac{w \\cdot x}{2}(L - x)$$</hud><telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":87,"i_eff":85,"i_reg":89,"cli":48,"hint_level":0}</telemetry>That parabola opens downward. At what fraction of the total span length does the maximum bending load occur?`,
+      text: `<hud>M(x) = \\frac{w \\cdot x}{2}(L - x)</hud><telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":87,"i_eff":85,"i_reg":89,"cli":48,"hint_level":0}</telemetry>That parabola opens downward. At what fraction of the total span length does the maximum bending load occur?`,
       command: null,
       fault: null
     };
   }
 
   return {
-    text: `<hud>$$\\Delta y = f(x + \\Delta x) - f(x)$$</hud><telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":84,"i_reg":86,"cli":42,"hint_level":0}</telemetry>Let us work through this one micro-step at a time. Which known values can we substitute into the relationship on your screen first?`,
+    text: `<hud>\\Delta y = f(x + \\Delta x) - f(x)</hud><telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":84,"i_reg":86,"cli":42,"hint_level":0}</telemetry>Let us work through this one micro-step at a time. Which known values can we substitute into the relationship on your screen first?`,
     command: null,
     fault: null
   };
@@ -658,35 +727,35 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, profileKe
 export const STEM_SCENARIOS = [
   {
     id: 'sb02-factoring',
-    course: 'Tier 2 (20s) • Grade 10 Math',
+    course: 'Tier 2 • Grade 10 Math',
     title: 'Factoring 2x² + 5x + 2 = 0',
     modeRecommendation: 1,
     prompt: "I'm stuck on factoring 2x^2 + 5x + 2 = 0."
   },
   {
     id: 'sb02-first-principles',
-    course: 'Tier 3 (45s) • Grade 12 Calculus',
+    course: 'Tier 3 • Grade 12 Calculus',
     title: 'First Principles Derivative of x²',
     modeRecommendation: 2,
     prompt: 'How do we find the instantaneous rate of change for f(x) = x^2?'
   },
   {
     id: 'sb02-domain',
-    course: 'Tier 2 (20s) • Exam Domain Trap',
+    course: 'Tier 2 • Exam Domain Trap',
     title: 'Extraneous Roots & Radical Domain',
     modeRecommendation: 3,
     prompt: 'For f(x) = sqrt(x - 2) / (x^2 - 9), I solved it and got x equals negative three and positive three.'
   },
   {
     id: 'sb02-beam',
-    course: 'Tier 2 (20s) • Civil Engineering',
+    course: 'Tier 2 • Civil Engineering',
     title: 'Bridge Beam Bending Stress',
     modeRecommendation: 4,
     prompt: 'Where is a simply supported bridge beam under the most bending stress?'
   },
   {
     id: 'sch4u-ph',
-    course: 'Tier 1 (5s) • Grade 12 Chemistry',
+    course: 'Tier 1 • Grade 12 Chemistry',
     title: 'Northern Ontario Lake pH',
     modeRecommendation: 4,
     prompt: 'If a lake in Northern Ontario has a pH of 4, how many times more acidic is it than neutral water at pH 7?'

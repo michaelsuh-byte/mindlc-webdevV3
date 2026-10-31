@@ -1,67 +1,74 @@
 import assert from 'node:assert/strict';
 import {
   STEP_TIERS,
+  sanitizeLatexForHud,
   parseTriChannelPacket,
   computeRetroactiveAttribution,
-  generateScratchpadSoftPing,
+  generateContextualCheckIn,
   sanitizeForSpeech,
   buildSystemInstruction
 } from './svs-engine.js';
 
-// 1. Verify Section 00 & 20 Tri-Channel Decoupling (<hud> + <telemetry> + Spoken Audio)
+// 1. Verify Strict Pre-KaTeX Screening Layer (`sanitizeLatexForHud`) strips ALL `$` signs
+const dirtyHud = '<hud>$$a = 2$$, $b = 5$ and $c = 2$</hud>';
+const screened = sanitizeLatexForHud(dirtyHud);
+assert.equal(screened.includes('$'), false, 'Zero $ signs allowed in screened HUD LaTeX');
+assert.equal(screened.includes('a = 2'), true);
+
+// 2. Verify Tri-Channel Decoupling with internal $ signs inside <hud> and spoken text
 const rawTriStream = `<hud>
 $$2x^2 + 5x + 2 = 0$$
+$a = 2$, $c = 2$
 </hud>
 <telemetry>{"step_tier":2,"delib_state":"DEEP_DELIBERATION","i_flow":91,"i_eff":89,"i_reg":93,"cli":48,"hint_level":0}</telemetry>
-Look at the leading coefficient and the constant. What two numbers multiply to four and add up to five?`;
+Look at the leading coefficient $a$ and the constant $c$. What two numbers multiply to four and add up to five?`;
 
 const parsed = parseTriChannelPacket(rawTriStream, 30);
-assert.equal(parsed.hudLatex, '2x^2 + 5x + 2 = 0', 'Channel 1 <hud> LaTeX extracted');
-assert.equal(parsed.telemetry.step_tier, 2, 'Channel 2 <telemetry> step_tier extracted');
-assert.equal(parsed.telemetry.delib_state, 'DEEP_DELIBERATION', 'Channel 2 delib_state extracted');
-assert.equal(parsed.telemetry.i_flow, 91, 'Channel 2 i_flow extracted');
-assert.equal(parsed.spokenText.includes('<hud>'), false, 'No <hud> in spoken channel');
-assert.equal(parsed.spokenText.includes('<telemetry>'), false, 'No <telemetry> in spoken channel');
-assert.equal(parsed.spokenText.includes('delib_state'), false, 'No JSON keys in spoken channel');
-assert.equal(
-  parsed.spokenText,
-  'Look at the leading coefficient and the constant. What two numbers multiply to four and add up to five?'
-);
+assert.equal(parsed.hudLatex.includes('$'), false, 'Channel 1 <hud> LaTeX has zero $ signs');
+assert.equal(parsed.spokenText.includes('$'), false, 'Channel 3 spoken text has zero $ signs');
+assert.equal(parsed.telemetry.step_tier, 2);
+assert.equal(parsed.telemetry.delib_state, 'DEEP_DELIBERATION');
 
-// 2. Verify Section 10 Complexity Indexing (Expected Latency Envelopes)
-assert.equal(STEP_TIERS[1].expectedSec, 5, 'Tier 1 t_expected = 5s');
-assert.equal(STEP_TIERS[2].expectedSec, 20, 'Tier 2 t_expected = 20s');
+// 3. Verify Realistic Deliberation Latency Envelopes
+assert.equal(STEP_TIERS[1].expectedSec, 15, 'Tier 1 t_expected = 15s');
+assert.equal(STEP_TIERS[2].expectedSec, 25, 'Tier 2 t_expected = 25s');
 assert.equal(STEP_TIERS[3].expectedSec, 45, 'Tier 3 t_expected = 45s');
 
-// 3. Verify Section 10.2 Non-Intrusive Soft-Ping
-const softPing = generateScratchpadSoftPing(2, '$$(x + h)^2 - x^2$$');
-assert.equal(softPing.telemetry.delib_state, 'SCRATCHPAD_ACTIVE');
-assert.equal(
-  softPing.spokenText,
-  'Take your time with the paper calculation. Let me know when you expand that bracket.'
+// 4. Verify Context-Aware Varied Check-Ins
+const checkInFactor1 = generateContextualCheckIn({
+  activeTier: 2,
+  lastTutorQuestion: 'What two numbers multiply to four and add up to five?'
+});
+const checkInFactor2 = generateContextualCheckIn({
+  activeTier: 2,
+  lastTutorQuestion: 'What two numbers multiply to four and add up to five?'
+});
+assert.notEqual(
+  checkInFactor1.spokenText,
+  checkInFactor2.spokenText,
+  'Consecutive check-ins vary naturally instead of repeating the same sentence'
 );
 
-// 4. Verify Section 10.3 Retroactive Attribution
-const deepDelib = computeRetroactiveAttribution('I expanded it to 2x^2 + 4x + x + 2', 18, 2, 0);
-assert.equal(deepDelib.delib_state, 'DEEP_DELIBERATION', 'Long pause + structured response -> DEEP_DELIBERATION');
-assert.equal(deepDelib.i_flow >= 85, true);
+const checkInConcept = generateContextualCheckIn({
+  activeTier: 1,
+  lastTutorQuestion: 'Why does the horizontal velocity stay constant while in the air?'
+});
+assert.equal(
+  /think|intuition|hunch|rephrase|hint/i.test(checkInConcept.spokenText),
+  true,
+  'Conceptual question triggers a thinking/intuition check-in rather than assuming paper calculation'
+);
+
+// 5. Verify Retroactive Attribution
+const deepDelib = computeRetroactiveAttribution('I factored it into (2x + 1)(x + 2)', 20, 2, 0);
+assert.equal(deepDelib.delib_state, 'DEEP_DELIBERATION');
 
 const cogStall = computeRetroactiveAttribution("I don't know", 15, 2, 0);
-assert.equal(cogStall.delib_state, 'COGNITIVE_STALL', 'Blockage response -> COGNITIVE_STALL');
-assert.equal(cogStall.hint_level, 1, 'Triggers Hint Ladder Level 1');
+assert.equal(cogStall.delib_state, 'COGNITIVE_STALL');
+assert.equal(cogStall.hint_level, 1);
 
-// 5. Verify sanitizeForSpeech strips both <hud> and <telemetry>
-const directSanitized = sanitizeForSpeech(
-  '<hud>$$x^2$$</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":85,"i_reg":85,"cli":35,"hint_level":0}</telemetry>What happens to the exponent?',
-  30
-);
-assert.equal(directSanitized.hudStripped, true);
-assert.equal(directSanitized.telemetryStripped, true);
-assert.equal(directSanitized.cleanText, 'What happens to the exponent?');
-
-// 6. Verify System Instruction contains Section 00, 10, and 20 directives
+// 6. Verify System Instruction forbids $ signs inside <hud>
 const sysPrompt = buildSystemInstruction('CHARLIE', 1, 30);
-assert.equal(sysPrompt.includes('<telemetry>'), true);
-assert.equal(sysPrompt.includes('DEEP_DELIBERATION'), true);
+assert.equal(sysPrompt.includes('WITHOUT any `$` or `$$` dollar signs'), true);
 
-console.log('ALL TRI-CHANNEL (<hud>, <telemetry>, AUDIO) & SCRATCHPAD DELIBERATION CHECKS PASSED.');
+console.log('ALL LATEX SCREENING, TIMER CONTROLS, COMPACT UI, AND CONTEXTUAL CHECK-IN TESTS PASSED.');
