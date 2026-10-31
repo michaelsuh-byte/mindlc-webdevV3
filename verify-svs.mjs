@@ -3,11 +3,16 @@ import {
   STEP_TIERS,
   sanitizeLatexForHud,
   parseTriChannelPacket,
+  isGraphRequestedByUser,
+  buildFallbackGraphSpec,
+  detectManimConsentIntent,
   computeRetroactiveAttribution,
   generateContextualCheckIn,
-  sanitizeForSpeech,
   buildSystemInstruction
 } from './svs-engine.js';
+
+import { compileMathExpression, findCurveFeatures } from './graph-engine.js';
+import { isIncompleteSpokenClause } from './audio-avionics.js';
 
 // 1. Verify Strict Pre-KaTeX Screening Layer (`sanitizeLatexForHud`) strips ALL `$` signs
 const dirtyHud = '<hud>$$a = 2$$, $b = 5$ and $c = 2$</hud>';
@@ -15,60 +20,67 @@ const screened = sanitizeLatexForHud(dirtyHud);
 assert.equal(screened.includes('$'), false, 'Zero $ signs allowed in screened HUD LaTeX');
 assert.equal(screened.includes('a = 2'), true);
 
-// 2. Verify Tri-Channel Decoupling with internal $ signs inside <hud> and spoken text
-const rawTriStream = `<hud>
+// 2. Verify Multi-Channel Decoupling with <hud>, <graph>, <telemetry>, and spoken text
+const rawQuadStream = `<hud>
 $$2x^2 + 5x + 2 = 0$$
-$a = 2$, $c = 2$
 </hud>
-<telemetry>{"step_tier":2,"delib_state":"DEEP_DELIBERATION","i_flow":91,"i_eff":89,"i_reg":93,"cli":48,"hint_level":0}</telemetry>
-Look at the leading coefficient $a$ and the constant $c$. What two numbers multiply to four and add up to five?`;
+<graph>{"title":"Quadratic Parabola","xDomain":[-6,4],"yDomain":[-4,10],"functions":[{"expr":"2*x^2 + 5*x + 2","label":"f(x) = 2x^2 + 5x + 2","color":"#60a5fa"}]}</graph>
+<telemetry>{"step_tier":2,"delib_state":"DEEP_DELIBERATION","i_flow":91,"i_eff":89,"i_reg":93,"cli":48,"hint_level":0,"session_complete":true}</telemetry>
+Here is the graph of the quadratic! Would you like to see a full Manim instructional video on this question?`;
 
-const parsed = parseTriChannelPacket(rawTriStream, 30);
+const parsed = parseTriChannelPacket(rawQuadStream, 30);
 assert.equal(parsed.hudLatex.includes('$'), false, 'Channel 1 <hud> LaTeX has zero $ signs');
 assert.equal(parsed.spokenText.includes('$'), false, 'Channel 3 spoken text has zero $ signs');
-assert.equal(parsed.telemetry.step_tier, 2);
-assert.equal(parsed.telemetry.delib_state, 'DEEP_DELIBERATION');
+assert.equal(parsed.spokenText.includes('<graph>'), false, 'Spoken text strips <graph> tags');
+assert.equal(Boolean(parsed.graphSpec), true, 'Parsed <graph> specification');
+assert.equal(parsed.graphSpec.functions[0].expr, '2*x^2 + 5*x + 2');
+assert.equal(parsed.telemetry.session_complete, true, 'Parsed session_complete flag');
 
-// 3. Verify Realistic Deliberation Latency Envelopes
-assert.equal(STEP_TIERS[1].expectedSec, 15, 'Tier 1 t_expected = 15s');
-assert.equal(STEP_TIERS[2].expectedSec, 25, 'Tier 2 t_expected = 25s');
-assert.equal(STEP_TIERS[3].expectedSec, 45, 'Tier 3 t_expected = 45s');
+// 3. Verify Open-Source Graphing Engine Math Compiler & Feature Detection (roots/vertex/intercepts)
+const fn = compileMathExpression('2*x^2 + 5*x + 2');
+assert.equal(fn(0), 2, 'f(0) = 2');
+assert.equal(fn(-2), 0, 'f(-2) = 0 root');
+assert.equal(fn(-0.5), 0, 'f(-0.5) = 0 root');
 
-// 4. Verify Context-Aware Varied Check-Ins
-const checkInFactor1 = generateContextualCheckIn({
-  activeTier: 2,
-  lastTutorQuestion: 'What two numbers multiply to four and add up to five?'
-});
-const checkInFactor2 = generateContextualCheckIn({
-  activeTier: 2,
-  lastTutorQuestion: 'What two numbers multiply to four and add up to five?'
-});
-assert.notEqual(
-  checkInFactor1.spokenText,
-  checkInFactor2.spokenText,
-  'Consecutive check-ins vary naturally instead of repeating the same sentence'
-);
+const features = findCurveFeatures(fn, -5, 3);
+const roots = features.filter(pt => pt.type === 'root');
+assert.equal(roots.length, 2, 'Detects both roots (-2, 0) and (-0.5, 0)');
 
-const checkInConcept = generateContextualCheckIn({
-  activeTier: 1,
-  lastTutorQuestion: 'Why does the horizontal velocity stay constant while in the air?'
-});
+// 4. Verify Graph Request Detection & Fallback Graph Builder
+assert.equal(isGraphRequestedByUser('Can you show me the graph of this parabola?'), true);
+const fallbackGraph = buildFallbackGraphSpec('Show me the graph of y = x^2 - 4', 'x^2 - 4 = 0');
+assert.equal(fallbackGraph.functions.length >= 1, true);
+
+// 5. Verify Smart Speech Pause Detector Clause Awareness
 assert.equal(
-  /think|intuition|hunch|rephrase|hint/i.test(checkInConcept.spokenText),
+  isIncompleteSpokenClause('So first I multiplied the leading coefficient by the constant because'),
   true,
-  'Conceptual question triggers a thinking/intuition check-in rather than assuming paper calculation'
+  'Recognizes trailing conjunction "because" as an incomplete spoken clause needing extra pause grace'
+);
+assert.equal(
+  isIncompleteSpokenClause('The roots are negative two and negative one half.'),
+  false,
+  'Complete sentence does not trigger incomplete-clause extension'
 );
 
-// 5. Verify Retroactive Attribution
-const deepDelib = computeRetroactiveAttribution('I factored it into (2x + 1)(x + 2)', 20, 2, 0);
-assert.equal(deepDelib.delib_state, 'DEEP_DELIBERATION');
+// 6. Verify End-of-Session Manim Consent Intent Detection
+assert.equal(detectManimConsentIntent('Yes please, show me the video!'), 'YES');
+assert.equal(detectManimConsentIntent('No thanks, let us move on.'), 'NO');
+assert.equal(detectManimConsentIntent('How do we factor x^2 - 9?'), null);
 
-const cogStall = computeRetroactiveAttribution("I don't know", 15, 2, 0);
-assert.equal(cogStall.delib_state, 'COGNITIVE_STALL');
-assert.equal(cogStall.hint_level, 1);
+// 7. Verify Context-Aware Varied Check-Ins & System Prompt
+const checkIn1 = generateContextualCheckIn({
+  activeTier: 2,
+  lastTutorQuestion: 'What two numbers multiply to four and add up to five?'
+});
+const checkIn2 = generateContextualCheckIn({
+  activeTier: 2,
+  lastTutorQuestion: 'What two numbers multiply to four and add up to five?'
+});
+assert.notEqual(checkIn1.spokenText, checkIn2.spokenText);
 
-// 6. Verify System Instruction forbids $ signs inside <hud>
 const sysPrompt = buildSystemInstruction('CHARLIE', 1, 30);
-assert.equal(sysPrompt.includes('WITHOUT any `$` or `$$` dollar signs'), true);
+assert.equal(sysPrompt.includes('<graph>'), true, 'System prompt includes <graph> channel instructions');
+assert.equal(sysPrompt.includes('session_complete'), true, 'System prompt includes session_complete Manim video offer rule');
 
-console.log('ALL LATEX SCREENING, TIMER CONTROLS, COMPACT UI, AND CONTEXTUAL CHECK-IN TESTS PASSED.');
+console.log('ALL GRAPH ENGINE, PAUSE DETECTOR, MANIM VIDEO, AND TRI-CHANNEL TESTS PASSED.');

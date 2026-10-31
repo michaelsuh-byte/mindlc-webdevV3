@@ -3,9 +3,9 @@
  * Implements:
  *  - CAN-ON-SVS-01 Core Socratic Voice System
  *  - Service Bulletin CAN-ON-SVS-SB-02 (<hud> Visual LaTeX Stepping + Strict LaTeX Screening Layer)
- *  - CAN-ON-SVS-PROTOTYPE Tri-Channel Decoupling (<hud>, <telemetry>, Spoken Audio)
+ *  - CAN-ON-SVS-PROTOTYPE Multi-Channel Decoupling (<hud>, <graph>, <telemetry>, Spoken Audio)
  *  - Section 10: Deliberation Protocol & Context-Aware Varied Check-Ins
- *  - Section 20: Telemetry JSON Schema
+ *  - Section 20: Telemetry JSON Schema (including `session_complete` for Manim Video Offer)
  */
 
 export const NEURAL_HUMAN_VOICES = [
@@ -32,7 +32,8 @@ export const DEFAULT_TELEMETRY = {
   i_eff: 85,
   i_reg: 85,
   cli: 35,
-  hint_level: 0
+  hint_level: 0,
+  session_complete: false
 };
 
 export const VOCAL_PROFILES = {
@@ -152,25 +153,20 @@ export function sanitizeLatexForHud(rawInput = '') {
   let cleaned = rawInput
     .replace(/<\/?hud>/gi, ' ')
     .replace(/<\/?telemetry>/gi, ' ')
+    .replace(/<\/?graph>/gi, ' ')
     .replace(/```(?:latex|math)?/gi, ' ')
     .replace(/```/g, ' ')
     .trim();
 
-  // If the string contains multiple $$...$$ or $...$ blocks separated by commas/newlines/text,
-  // extract or strip all dollar signs cleanly so KaTeX receives pure math-mode syntax.
   cleaned = cleaned
     .replace(/\\\[|\\\]|\\\(|\\\)/g, ' ')
-    // Replace adjacent `$$ ... $$` blocks separated by whitespace/newlines with `\quad`
     .replace(/\$\$\s*\$\$/g, ' \\quad ')
-    // Replace `$ ... $, $ ... $` patterns with `\quad`
     .replace(/\$\s*,\s*\$/g, ', \\; ')
     .replace(/\$\s+(?:and|or)\s+\$/gi, ' \\;\\text{and}\\; ')
-    // Strip ALL remaining `$$`, `\$`, and `$` characters anywhere in the string!
     .replace(/\\\$/g, '')
     .replace(/\$/g, '')
     .trim();
 
-  // Collapse multi-line equations into `\quad` separated expressions so single-line KaTeX never breaks
   cleaned = cleaned
     .split(/\r?\n/)
     .map(line => line.trim())
@@ -181,7 +177,7 @@ export function sanitizeLatexForHud(rawInput = '') {
 }
 
 /**
- * Compiles the full systemInstruction payload
+ * Compiles the full systemInstruction payload including `<hud>`, `<graph>`, `<telemetry>`, and Session-End Manim Offer
  */
 export function buildSystemInstruction(profileKey = 'CHARLIE', modeId = 1, maxWords = 30) {
   const profile = VOCAL_PROFILES[profileKey] || VOCAL_PROFILES.CHARLIE;
@@ -194,43 +190,24 @@ Active Mode: ${mode.code} - ${mode.name} (${mode.objective}).
 # [SYSTEM SPECIFICATION: FLIGHT OPERATIONS MANUAL - CAN-ON-SVS-PROTOTYPE]
 
 ## 00. OPERATIONAL DIRECTIVES & MULTI-CHANNEL DECOUPLING
-The system operates simultaneously across three decoupled communication channels in a single response stream.
+The system operates simultaneously across decoupled communication channels in a single response stream:
 
-### OUTPUT CHANNEL SPECIFICATION:
-1. \`<hud> ... </hud>\` (STUDENT DISPLAY):
+1. \`<hud> ... </hud>\` (STUDENT MATH DISPLAY):
    - Contains ONLY a single clean LaTeX math expression representing the current mathematical state or micro-step delta.
-   - IMPORTANT LATEX RULE: Write pure LaTeX inside \`<hud> ... </hud>\` WITHOUT any \`$\` or \`$$\` dollar signs! (For example: \`<hud>2x^2 + 5x + 2 = 0</hud>\` or \`<hud>m = \\frac{y_2 - y_1}{x_2 - x_1}</hud>\`).
-   - Zero prose. Zero explanations inside \`<hud>\`.
-2. \`<telemetry> ... </telemetry>\` (BACKEND DASHBOARD / METRIC ENGINE):
-   - Emits a single-line minified JSON payload containing real-time cognitive tracking states.
-3. [PLAIN SPOKEN TEXT] (AUDIO SYNTHESIZER):
-   - Everything outside \`<hud>\` and \`<telemetry>\` tags is routed exclusively to the voice emitter.
+   - IMPORTANT LATEX RULE: Write pure LaTeX inside \`<hud> ... </hud>\` WITHOUT any \`$\` or \`$$\` dollar signs! (Example: \`<hud>2x^2 + 5x + 2 = 0</hud>\`).
+2. \`<graph> ... </graph>\` (INTERACTIVE DESMOS-STYLE GRAPHING CALCULATOR):
+   - Whenever the student asks to see a graph, plot, curve, parabola, tangent, vertex, intercept, or visual representation of a function, you MUST emit a \`<graph>\` block containing a single-line JSON specification so the interactive graph renders directly in the chat!
+   - Format: \`<graph>{"functions":["2*x^2 + 5*x + 2"],"title":"Graph of f(x) = 2x^2 + 5x + 2","xDomain":[-6,4],"yDomain":[-4,10]}</graph>\`
+   - Do NOT try to just describe a graph verbally when asked for a graph—always emit the \`<graph>\` tag and briefly point out a key feature on the plotted graph!
+3. \`<telemetry> ... </telemetry>\` (BACKEND DASHBOARD / METRIC ENGINE):
+   - Emits a single-line minified JSON payload:
+     \`<telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":88,"i_reg":85,"cli":40,"hint_level":0,"session_complete":false}</telemetry>\`
+   - Set \`"session_complete": true\` ONLY when the student has reached the final answer or finished solving/understanding the problem!
+4. [PLAIN SPOKEN TEXT] (AUDIO SYNTHESIZER):
+   - Everything outside \`<hud>\`, \`<graph>\`, and \`<telemetry>\` tags is routed to the voice emitter.
    - Strict 1–2 sentence limit (aim for 15 to 25 spoken words, strictly under ${maxWords} spoken words). Zero preamble.
-   - NEVER use \`$\` signs or LaTeX commands in the spoken text outside \`<hud>\`. Write spoken numbers and variables in plain English words (e.g., "two x squared plus five x", "negative three").
-   - Zero Redundancy: Never read aloud the full equation already shown on the \`<hud>\`. Directly address the student's question or step and ask the next guiding question.
-
----
-
-## 10. DELIBERATION & COMPLEXITY INDEXING
-1. Categorize the next step you are asking the student to perform in \`step_tier\`:
-   * TIER 1 (Recall / Concept / Quick Mental Check): \`step_tier: 1\`
-   * TIER 2 (1-2 Step Algebra / Substitution): \`step_tier: 2\`
-   * TIER 3 (Multi-step Derivation / Proof): \`step_tier: 3\`
-2. RETROACTIVE ATTRIBUTION:
-   * If logically structured/correct after a pause -> Tag \`delib_state\` as \`"DEEP_DELIBERATION"\` (High \`i_flow\` 80-95, High \`i_eff\` 80-95, \`hint_level: 0\`).
-   * If guessing or expressing blockage ("I don't know", "I'm stuck") -> Tag \`delib_state\` as \`"COGNITIVE_STALL"\` (Increase \`hint_level\` 1-4).
-   * If responding promptly -> Tag \`delib_state\` as \`"IMMEDIATE"\`.
-
----
-
-## 20. TELEMETRY JSON SCHEMA
-Every response MUST output a \`<telemetry>\` block matching this exact schema:
-\`<telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":88,"i_reg":85,"cli":40,"hint_level":0}</telemetry>\`
-
-EXAMPLE COMPLETE RESPONSE FORMAT:
-<hud>2x^2 + 5x + 2 = 0</hud>
-<telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":86,"i_eff":84,"i_reg":88,"cli":45,"hint_level":0}</telemetry>
-Look at the leading coefficient and the constant term on your screen. What two numbers multiply to four and add up to five?`;
+   - NEVER use \`$\` signs or LaTeX commands in the spoken text.
+   - END-OF-SESSION MANIM VIDEO OFFER: When the student finishes solving the problem (\`"session_complete": true\`), congratulate them briefly and ask: "Would you like to see a full Manim instructional video with voiceover for this question?"`;
 }
 
 /**
@@ -262,7 +239,8 @@ export function normalizeTelemetryPayload(rawObj = {}, fallbackOverrides = {}) {
     i_eff: clamp100(merged.i_eff, 85),
     i_reg: clamp100(merged.i_reg, 85),
     cli: clamp100(merged.cli, 40),
-    hint_level: clampHint(merged.hint_level)
+    hint_level: clampHint(merged.hint_level),
+    session_complete: Boolean(merged.session_complete)
   };
 }
 
@@ -309,20 +287,12 @@ export function computeRetroactiveAttribution(utterance = '', pauseSeconds = 0, 
   });
 }
 
-/**
- * Context-Aware Varied Check-In Generator:
- * Adapts the check-in message to the current conversation context (whether the student is thinking
- * through a concept, checking a sign/domain, estimating mentally, or working through algebra),
- * cycling naturally so it never repeats the same robotic assumption.
- */
 let lastCheckInIndex = -1;
 
 export function generateContextualCheckIn({
   activeTier = 1,
   lastHudLatex = '',
-  lastTutorQuestion = '',
-  lastStudentMessage = '',
-  modeId = 1
+  lastTutorQuestion = ''
 } = {}) {
   const telemetry = normalizeTelemetryPayload({
     step_tier: activeTier,
@@ -335,10 +305,8 @@ export function generateContextualCheckIn({
   });
 
   const qNorm = (lastTutorQuestion || '').toLowerCase();
-  const sNorm = (lastStudentMessage || '').toLowerCase();
   const candidates = [];
 
-  // 1. Context-specific prompts tailored to what the tutor just asked
   if (/multiply|add\s+up|factor/i.test(qNorm)) {
     candidates.push(
       'Take your time thinking through the factor pairs—let me know if you want to test a couple of numbers together.',
@@ -361,7 +329,6 @@ export function generateContextualCheckIn({
     );
   }
 
-  // 2. Tier-aware general varied check-ins (thinking vs calculating vs asking for a nudge)
   if (activeTier === 1) {
     candidates.push(
       'Take your time thinking about it—share whatever comes to mind first, or let me know if you want a small hint.',
@@ -379,8 +346,7 @@ export function generateContextualCheckIn({
     );
   }
 
-  // Pick a candidate different from the last one used
-  let idx = (lastCheckInIndex + 1) % candidates.length;
+  const idx = (lastCheckInIndex + 1) % candidates.length;
   lastCheckInIndex = idx;
 
   return {
@@ -390,22 +356,77 @@ export function generateContextualCheckIn({
   };
 }
 
-// Keep backward-compatible export name for existing tests/callers
 export function generateScratchpadSoftPing(activeTier = 2, lastHudLatex = '', lastTutorQuestion = '') {
   return generateContextualCheckIn({ activeTier, lastHudLatex, lastTutorQuestion });
 }
 
 /**
- * CAN-ON-SVS-PROTOTYPE TRI-CHANNEL PARSER WITH STRICT LATEX SCREENING:
- * Splits a model transmission into:
- *  1. hudLatex: Screened, `$`-free pure LaTeX for KaTeX DOM rendering
- *  2. telemetry: Validated JSON object from `<telemetry>...</telemetry>`
- *  3. spokenText: Plain spoken text with `<hud>`, `<telemetry>`, and `$` completely stripped
+ * Checks if the user's message is asking to see or plot a graph
+ */
+export function isGraphRequestedByUser(utterance = '') {
+  return /\b(graph|plot|sketch|curve|parabola|draw|visuali[sz]e|show\s+me\s+what\s+it\s+looks\s+like)\b/i.test(utterance);
+}
+
+/**
+ * Extracts a plottable function expression from a LaTeX HUD string or user utterance
+ * when the user asks for a graph.
+ */
+export function buildFallbackGraphSpec(hudLatex = '', utterance = '') {
+  const candidates = [];
+
+  // Look for explicit expression in user utterance first (e.g., "graph y = x^2 - 4" or "plot sin(x)")
+  const userExprMatch = utterance.match(/(?:y\s*=\s*|f\(x\)\s*=\s*|graph\s+of\s+|graph\s+|plot\s+)([0-9a-zA-Z^+\-*/().\s\\]+)/i);
+  if (userExprMatch && userExprMatch[1]) {
+    const cleaned = userExprMatch[1]
+      .replace(/\b(please|for\s+me|now|in\s+the\s+chat)\b/gi, '')
+      .trim();
+    if (cleaned && /[x\d]/i.test(cleaned)) {
+      candidates.push(cleaned);
+    }
+  }
+
+  if (candidates.length === 0 && hudLatex) {
+    // Split across \implies or \quad and take a plottable expression containing x
+    const parts = hudLatex.split(/\\implies|\\quad|;/);
+    for (const part of parts) {
+      if (/x/i.test(part) && !/\\Delta\s*y/i.test(part)) {
+        candidates.push(part.trim());
+        break;
+      }
+    }
+  }
+
+  const expr = candidates[0] || '2*x^2 + 5*x + 2';
+  return {
+    functions: [expr],
+    title: `Interactive Graph: ${expr}`,
+    xDomain: [-8, 8],
+    yDomain: [-6, 10]
+  };
+}
+
+/**
+ * Detects whether a student's reply to the End-of-Session Manim Video prompt is YES or NO
+ */
+export function detectManimConsentIntent(utterance = '') {
+  const norm = utterance.toLowerCase().trim();
+  if (/^(yes|yeah|yep|yup|sure|ok|okay|please|go\s+ahead|make\s+(the\s+)?video|show\s+(me\s+)?(the\s+)?video|yes\s+please|i\s+would\s+like\s+that|sounds\s+good)\b/i.test(norm)) {
+    return 'YES';
+  }
+  if (/^(no|nope|nah|no\s+thanks|no\s+thank\s+you|skip|not\s+right\s+now|don'?t\s+make|pass)\b/i.test(norm)) {
+    return 'NO';
+  }
+  return null;
+}
+
+/**
+ * MULTI-CHANNEL PARSER (`<hud>`, `<graph>`, `<telemetry>`, and Plain Spoken Audio)
  */
 export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry = null) {
   if (!rawText || typeof rawText !== 'string') {
     return {
       hudLatex: '',
+      graphSpec: null,
       telemetry: normalizeTelemetryPayload(fallbackTelemetry || DEFAULT_TELEMETRY),
       spokenText: '',
       audit: sanitizeForSpeech('', maxWords)
@@ -414,8 +435,9 @@ export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry 
 
   const hudBlocks = [];
   let parsedTelemetry = null;
+  let parsedGraph = null;
 
-  // 1. Extract <hud>...</hud> and pass through strict LaTeX screening layer
+  // 1. Extract <hud>...</hud>
   let workingText = rawText.replace(/<hud>([\s\S]*?)<\/hud>/gi, (_match, inner) => {
     const cleanedInner = sanitizeLatexForHud(inner);
     if (cleanedInner) {
@@ -424,7 +446,26 @@ export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry 
     return ' ';
   });
 
-  // 2. Extract <telemetry>...</telemetry>
+  // 2. Extract <graph>...</graph>
+  workingText = workingText.replace(/<graph>([\s\S]*?)<\/graph>/gi, (_match, inner) => {
+    const rawInner = inner.trim();
+    try {
+      parsedGraph = JSON.parse(rawInner);
+    } catch (_) {
+      // If the LLM put a raw expression like `<graph>2x^2 + 5x + 2</graph>` instead of JSON, wrap it!
+      if (rawInner) {
+        parsedGraph = {
+          functions: [rawInner.replace(/^\$\$|\$\$$/g, '').replace(/\$/g, '').trim()],
+          title: `Interactive Graph`,
+          xDomain: [-8, 8],
+          yDomain: [-6, 10]
+        };
+      }
+    }
+    return ' ';
+  });
+
+  // 3. Extract <telemetry>...</telemetry>
   workingText = workingText.replace(/<telemetry>([\s\S]*?)<\/telemetry>/gi, (_match, inner) => {
     try {
       const cleanJson = inner.trim();
@@ -433,7 +474,7 @@ export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry 
     return ' ';
   });
 
-  // 3. Fallback: if LLM emitted standalone $$...$$ outside <hud>, capture and screen it into HUD
+  // 4. Fallback: if LLM emitted standalone $$...$$ outside <hud>
   workingText = workingText.replace(/\$\$([\s\S]*?)\$\$/g, (_m, inner) => {
     const cleaned = sanitizeLatexForHud(inner);
     if (cleaned && hudBlocks.length === 0) {
@@ -446,8 +487,14 @@ export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry 
   const telemetry = normalizeTelemetryPayload(parsedTelemetry, fallbackTelemetry || DEFAULT_TELEMETRY);
   const audit = sanitizeForSpeech(workingText, maxWords);
 
+  // Also detect if spoken text explicitly asks the Manim video question
+  if (/manim|instructional\s+video/i.test(audit.cleanText)) {
+    telemetry.session_complete = true;
+  }
+
   return {
     hudLatex,
+    graphSpec: parsedGraph,
     telemetry,
     spokenText: audit.cleanText,
     audit
@@ -457,15 +504,13 @@ export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry 
 export const parseDualChannelPacket = parseTriChannelPacket;
 
 /**
- * Pre-Emission Sanitizer for Channel 3 (PLAIN SPOKEN TEXT):
- *  1. Strips `<hud>...</hud>`, `<telemetry>...</telemetry>`, and ALL `$` signs
- *  2. Converts any residual math symbols into spoken English
- *  3. Enforces the configurable spoken word ceiling
+ * Pre-Emission Sanitizer for Plain Spoken Audio Channel
  */
 export function sanitizeForSpeech(rawText, maxWords = 30) {
   const audit = {
     rawText,
     hudStripped: false,
+    graphStripped: false,
     telemetryStripped: false,
     preamblePurged: false,
     orthographyConverted: false,
@@ -486,6 +531,11 @@ export function sanitizeForSpeech(rawText, maxWords = 30) {
     audit.hudStripped = true;
   }
 
+  if (/<graph>[\s\S]*?<\/graph>/i.test(text)) {
+    text = text.replace(/<graph>[\s\S]*?<\/graph>/gi, ' ').trim();
+    audit.graphStripped = true;
+  }
+
   if (/<telemetry>[\s\S]*?<\/telemetry>/i.test(text)) {
     text = text.replace(/<telemetry>[\s\S]*?<\/telemetry>/gi, ' ').trim();
     audit.telemetryStripped = true;
@@ -493,7 +543,6 @@ export function sanitizeForSpeech(rawText, maxWords = 30) {
 
   const beforeStrip = text;
 
-  // Strip all markdown fences, LaTeX delimiters, and literal $ signs
   text = text
     .replace(/```[\s\S]*?```/g, '')
     .replace(/\$\$([\s\S]*?)\$\$/g, '$1')
@@ -608,7 +657,7 @@ export function detectSystemCommand(utterance) {
       return {
         type: 'MODE_SWITCH',
         mode: modeNum,
-        response: `<telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":90,"i_eff":90,"i_reg":90,"cli":25,"hint_level":0}</telemetry>Switched to Mode ${modeNum}.`
+        response: `<telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":90,"i_eff":90,"i_reg":90,"cli":25,"hint_level":0,"session_complete":false}</telemetry>Switched to Mode ${modeNum}.`
       };
     }
   }
@@ -627,7 +676,7 @@ export function detectFaultCondition(utterance) {
       return {
         code: 402,
         ...FAULT_CODES[402],
-        interceptResponse: `<hud>ax^2 + bx + c = 0</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":55,"i_eff":50,"i_reg":60,"cli":75,"hint_level":1}</telemetry>I cannot hand over a finished assignment, but we can solve it together step by step. Which variable or term should we isolate first?`
+        interceptResponse: `<hud>ax^2 + bx + c = 0</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":55,"i_eff":50,"i_reg":60,"cli":75,"hint_level":1,"session_complete":false}</telemetry>I cannot hand over a finished assignment, but we can solve it together step by step. Which variable or term should we isolate first?`
       };
     }
   }
@@ -640,7 +689,7 @@ export function detectFaultCondition(utterance) {
       return {
         code: 401,
         ...FAULT_CODES[401],
-        interceptResponse: `<hud>\\frac{d}{dx}(x^n) = n \\cdot x^{n-1}</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":50,"i_eff":52,"i_reg":65,"cli":80,"hint_level":1}</telemetry>No worries at all, let us simplify. Looking at the power rule on your screen, do we multiply by the exponent n, or divide by it?`
+        interceptResponse: `<hud>\\frac{d}{dx}(x^n) = n \\cdot x^{n-1}</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":50,"i_eff":52,"i_reg":65,"cli":80,"hint_level":1,"session_complete":false}</telemetry>No worries at all, let us simplify. Looking at the power rule on your screen, do we multiply by the exponent n, or divide by it?`
       };
     }
   }
@@ -648,7 +697,7 @@ export function detectFaultCondition(utterance) {
   const driftPatterns = [
     {
       regex: /\b(friction\s+is\s+zero\s+so\s+the\s+wheel\s+rolls|zero\s+friction\s+makes\s+it\s+roll)\b/i,
-      response: `<hud>\\tau = f_s \\cdot R</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":75,"i_eff":70,"i_reg":80,"cli":60,"hint_level":1}</telemetry>Picture a car tire on glare ice where static friction is zero. Without friction creating torque at the rim, would the wheel spin or just slide flat?`
+      response: `<hud>\\tau = f_s \\cdot R</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":75,"i_eff":70,"i_reg":80,"cli":60,"hint_level":1,"session_complete":false}</telemetry>Picture a car tire on glare ice where static friction is zero. Without friction creating torque at the rim, would the wheel spin or just slide flat?`
     }
   ];
 
@@ -665,7 +714,7 @@ export function detectFaultCondition(utterance) {
   return null;
 }
 
-export function generateOfflineSocraticResponse(utterance, modeId = 1, profileKey = 'CHARLIE') {
+export function generateOfflineSocraticResponse(utterance, modeId = 1, _profileKey = 'CHARLIE') {
   const cmd = detectSystemCommand(utterance);
   if (cmd) {
     return { text: cmd.response, command: cmd, fault: null };
@@ -678,9 +727,18 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, profileKe
 
   const norm = utterance.toLowerCase();
 
+  if (isGraphRequestedByUser(norm)) {
+    const spec = buildFallbackGraphSpec('', utterance);
+    return {
+      text: `<hud>${spec.functions[0]}</hud><graph>${JSON.stringify(spec)}</graph><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":90,"i_eff":90,"i_reg":88,"cli":35,"hint_level":0,"session_complete":false}</telemetry>Here is the interactive graph of the function. Hover over the curve to inspect its intercepts and vertex—what do you notice about where it crosses the x axis?`,
+      command: null,
+      fault: null
+    };
+  }
+
   if (/2x\^2\s*\+\s*5x\s*\+\s*2/i.test(norm) || /factoring/i.test(norm)) {
     return {
-      text: `<hud>2x^2 + 5x + 2 = 0</hud><telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":86,"i_eff":85,"i_reg":88,"cli":45,"hint_level":0}</telemetry>Look at the lead coefficient and the constant on your screen. What two numbers multiply to four and add up to five?`,
+      text: `<hud>2x^2 + 5x + 2 = 0</hud><telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":86,"i_eff":85,"i_reg":88,"cli":45,"hint_level":0,"session_complete":false}</telemetry>Look at the lead coefficient and the constant on your screen. What two numbers multiply to four and add up to five?`,
       command: null,
       fault: null
     };
@@ -689,42 +747,33 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, profileKe
   if (/derivative\s+of\s+x\s*(squared|\^2|2)/i.test(norm) || /instantaneous\s+rate/i.test(norm)) {
     if (modeId === 2) {
       return {
-        text: `<hud>m_{\\text{sec}} = \\frac{(x + h)^2 - x^2}{h}</hud><telemetry>{"step_tier":3,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":86,"i_reg":90,"cli":55,"hint_level":0}</telemetry>Expand that squared binomial in the numerator first. Which terms cancel out?`,
+        text: `<hud>m_{\\text{sec}} = \\frac{(x + h)^2 - x^2}{h}</hud><telemetry>{"step_tier":3,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":86,"i_reg":90,"cli":55,"hint_level":0,"session_complete":false}</telemetry>Expand that squared binomial in the numerator first. Which terms cancel out?`,
         command: null,
         fault: null
       };
     }
     return {
-      text: `<hud>f(x) = x^2 \\implies f'(x) = 2x^{2-1}</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":90,"i_reg":86,"cli":35,"hint_level":0}</telemetry>Look at the power rule step on your screen. When you bring the exponent two out front, what becomes the new power on x?`,
-      command: null,
-      fault: null
-    };
-  }
-
-  if (/negative\s+three\s+and\s+positive\s+three/i.test(norm) || /domain\s+restriction/i.test(norm)) {
-    return {
-      text: `<hud>f(x) = \\frac{\\sqrt{x - 2}}{x^2 - 9}</hud><telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":82,"i_eff":80,"i_reg":85,"cli":50,"hint_level":1}</telemetry>Check for domain restrictions in that expression. Plug negative three into the square root on top and see what happens.`,
-      command: null,
-      fault: null
-    };
-  }
-
-  if (/beam|stress|bending\s+moment/i.test(norm)) {
-    return {
-      text: `<hud>M(x) = \\frac{w \\cdot x}{2}(L - x)</hud><telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":87,"i_eff":85,"i_reg":89,"cli":48,"hint_level":0}</telemetry>That parabola opens downward. At what fraction of the total span length does the maximum bending load occur?`,
+      text: `<hud>f(x) = x^2 \\implies f'(x) = 2x^{2-1}</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":90,"i_reg":86,"cli":35,"hint_level":0,"session_complete":false}</telemetry>Look at the power rule step on your screen. When you bring the exponent two out front, what becomes the new power on x?`,
       command: null,
       fault: null
     };
   }
 
   return {
-    text: `<hud>\\Delta y = f(x + \\Delta x) - f(x)</hud><telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":84,"i_reg":86,"cli":42,"hint_level":0}</telemetry>Let us work through this one micro-step at a time. Which known values can we substitute into the relationship on your screen first?`,
+    text: `<hud>\\Delta y = f(x + \\Delta x) - f(x)</hud><telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":84,"i_reg":86,"cli":42,"hint_level":0,"session_complete":false}</telemetry>Let us work through this one micro-step at a time. Which known values can we substitute into the relationship on your screen first?`,
     command: null,
     fault: null
   };
 }
 
 export const STEM_SCENARIOS = [
+  {
+    id: 'graph-parabola',
+    course: 'Interactive Graph • Grade 11 Functions',
+    title: '📈 Graph & Inspect 2x² + 5x + 2',
+    modeRecommendation: 1,
+    prompt: 'Can you show me the graph of y = 2x^2 + 5x + 2 and help me find its roots and vertex?'
+  },
   {
     id: 'sb02-factoring',
     course: 'Tier 2 • Grade 10 Math',
@@ -752,12 +801,5 @@ export const STEM_SCENARIOS = [
     title: 'Bridge Beam Bending Stress',
     modeRecommendation: 4,
     prompt: 'Where is a simply supported bridge beam under the most bending stress?'
-  },
-  {
-    id: 'sch4u-ph',
-    course: 'Tier 1 • Grade 12 Chemistry',
-    title: 'Northern Ontario Lake pH',
-    modeRecommendation: 4,
-    prompt: 'If a lake in Northern Ontario has a pH of 4, how many times more acidic is it than neutral water at pH 7?'
   }
 ];

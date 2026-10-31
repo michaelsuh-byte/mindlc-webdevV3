@@ -140,6 +140,11 @@ body {
   color: var(--accent-blue);
 }
 
+.icon-btn.accent-outline {
+  border-color: rgba(253, 214, 99, 0.45);
+  color: var(--accent-amber);
+}
+
 /* MAIN WORKSPACE */
 .main-workspace {
   flex: 1;
@@ -884,6 +889,452 @@ input[type="range"] {
   border-radius: 6px;
   font-weight: 600;
   cursor: pointer;
+}
+
+/* SMART SPEECH PAUSE DETECTOR PILL & HOLD MODE BUTTON */
+.pause-detector-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(30, 38, 56, 0.85);
+  border: 1px solid rgba(168, 199, 250, 0.35);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 10.5px;
+  color: var(--accent-blue);
+}
+
+.pause-detector-pill[hidden] {
+  display: none;
+}
+
+.pause-detector-track {
+  width: 68px;
+  height: 5px;
+  background: #131314;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.pause-detector-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent-blue);
+  transition: width 0.12s linear;
+}
+
+.send-now-mini-btn {
+  background: var(--accent-blue);
+  border: none;
+  color: #0b1220;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.hold-mode-btn {
+  background: var(--bg-surface-hover);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.hold-mode-btn:hover {
+  color: var(--text-main);
+  border-color: var(--accent-blue);
+}
+
+.hold-mode-btn.active {
+  background: rgba(253, 214, 99, 0.18);
+  border-color: var(--accent-amber);
+  color: var(--accent-amber);
+  font-weight: 600;
+}
+
+/* OPEN-SOURCE INTERACTIVE GRAPHING ENGINE CARD (DESMOS / GEOGEBRA STYLE) */
+.desmos-graph-card {
+  margin-top: 8px;
+  margin-bottom: 6px;
+  background: #0f131c;
+  border: 1px solid rgba(168, 199, 250, 0.35);
+  border-radius: 12px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 310px;
+  max-width: 640px;
+}
+
+.desmos-graph-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.desmos-title-group {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.desmos-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent-blue);
+  background: rgba(168, 199, 250, 0.14);
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+
+.desmos-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.desmos-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.desmos-tool-btn {
+  background: #1a2130;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-main);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.desmos-tool-btn:hover {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+
+.desmos-canvas-wrap {
+  position: relative;
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #242c3d;
+}
+
+.desmos-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  cursor: grab;
+}
+
+.desmos-canvas:active {
+  cursor: grabbing;
+}
+
+.desmos-tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(15, 19, 28, 0.92);
+  border: 1px solid var(--accent-blue);
+  color: #ffffff;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 6px;
+  transform: translate(10px, -24px);
+  white-space: nowrap;
+}
+
+.desmos-expr-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.desmos-expr-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.desmos-expr-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #181e2c;
+  border: 1px solid #2b354b;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: #e3e3e3;
+}
+
+.desmos-color-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.desmos-remove-fn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  margin-left: 2px;
+}
+
+.desmos-add-form {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.desmos-expr-input {
+  background: #141923;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 3px 7px;
+  color: var(--text-main);
+  font-size: 11px;
+  width: 155px;
+}
+
+.desmos-add-btn {
+  background: var(--accent-blue-bg);
+  border: 1px solid rgba(168, 199, 250, 0.45);
+  color: var(--accent-blue);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* END-OF-SESSION MANIM CONSENT OFFER CARD */
+.manim-offer-card {
+  margin-top: 8px;
+  background: linear-gradient(135deg, rgba(28, 36, 54, 0.92), rgba(20, 25, 38, 0.95));
+  border: 1px solid rgba(253, 214, 99, 0.45);
+  border-radius: 10px;
+  padding: 8px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.manim-offer-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent-amber);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.manim-offer-desc {
+  font-size: 11.5px;
+  color: var(--text-main);
+}
+
+.manim-offer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.manim-yes-btn {
+  background: rgba(129, 201, 149, 0.2);
+  border: 1px solid var(--accent-green);
+  color: var(--accent-green);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.manim-yes-btn:hover {
+  background: rgba(129, 201, 149, 0.32);
+}
+
+.manim-no-btn {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.manim-no-btn:hover {
+  border-color: var(--accent-red);
+  color: var(--accent-red);
+}
+
+/* EMBEDDED MANIM INSTRUCTIONAL VIDEO CANVAS PLAYER */
+.manim-video-card {
+  margin-top: 8px;
+  margin-bottom: 6px;
+  background: #0c1017;
+  border: 1px solid rgba(253, 214, 99, 0.45);
+  border-radius: 12px;
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 320px;
+  max-width: 660px;
+}
+
+.manim-video-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.manim-badge-group {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.manim-engine-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent-amber);
+  background: rgba(253, 214, 99, 0.15);
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+
+.manim-video-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.manim-voice-tag {
+  font-size: 10.5px;
+  color: var(--accent-blue);
+}
+
+.manim-stage {
+  position: relative;
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #263044;
+  background: #0c1017;
+}
+
+.manim-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.manim-tex-overlay {
+  position: absolute;
+  top: 23%;
+  left: 6%;
+  right: 6%;
+  height: 21%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.manim-tex-box {
+  color: #ffffff;
+  font-size: 15px;
+  text-align: center;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.manim-tex-box .katex-display {
+  margin: 0 !important;
+}
+
+.manim-controls-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.manim-ctrl-btn {
+  background: rgba(168, 199, 250, 0.16);
+  border: 1px solid var(--accent-blue);
+  color: var(--accent-blue);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.manim-ctrl-btn:hover {
+  background: rgba(168, 199, 250, 0.28);
+}
+
+.manim-scene-dots {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.manim-scene-dot {
+  background: #171e2c;
+  border: 1px solid #2b354b;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.manim-scene-dot.active {
+  background: rgba(253, 214, 99, 0.18);
+  border-color: var(--accent-amber);
+  color: var(--accent-amber);
+}
+
+.manim-status-tag {
+  font-size: 10.5px;
+  color: var(--text-muted);
 }
 
 @media (max-width: 900px) {

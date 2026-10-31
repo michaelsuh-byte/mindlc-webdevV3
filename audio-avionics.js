@@ -1,34 +1,50 @@
 /**
- * Audio & Voice Controller with Studio Neural Human Voice (/api/tts) & Speaker Echo Lock
+ * Audio & Voice Controller with:
+ *  - Studio Neural Human Voice (/api/tts)
+ *  - Speaker Echo Lock (auto-mutes mic during tutor speech & Manim video narration)
+ *  - Smart Speech Pause Detector Device (prevents long student explanations from being cut off mid-thought)
  */
 
-import { VOCAL_PROFILES, NEURAL_HUMAN_VOICES, buildSystemInstruction } from './svs-engine.js';
+import { VOCAL_PROFILES, NEURAL_HUMAN_VOICES } from './svs-engine.js';
+
+/**
+ * Detects if the student's current spoken transcript ends mid-clause / mid-equation
+ * so the Speech Pause Detector automatically grants extra pause time (+1400ms).
+ */
+export function isIncompleteSpokenClause(text = '') {
+  const clean = String(text || '').trim().toLowerCase();
+  if (!clean) return false;
+  return /\b(and|or|but|because|since|so|therefore|if|when|then|where|which|that|plus|minus|times|multiplied\s+by|divided\s+by|over|equals|is\s+equal\s+to|to\s+the\s+power\s+of|square\s+root\s+of|um|uh|er|like|first|second|next)\s*$/i.test(
+    clean
+  );
+}
 
 export class AudioAvionicsController {
   constructor(callbacks = {}) {
     this.onVadStateChange = callbacks.onVadStateChange || (() => {});
+    this.onPauseDetectorUpdate = callbacks.onPauseDetectorUpdate || (() => {});
     this.onBargeIn = callbacks.onBargeIn || (() => {});
     this.onSpeechRecognized = callbacks.onSpeechRecognized || (() => {});
     this.onInterimTranscript = callbacks.onInterimTranscript || (() => {});
     this.onBotSpeakingChange = callbacks.onBotSpeakingChange || (() => {});
     this.onTtfaMeasured = callbacks.onTtfaMeasured || (() => {});
-    this.onLiveSocketStatus = callbacks.onLiveSocketStatus || (() => {});
-    this.onLiveAudioTranscript = callbacks.onLiveAudioTranscript || (() => {});
     this.onVoicesUpdated = callbacks.onVoicesUpdated || (() => {});
 
     this.audioCtx = null;
     this.analyser = null;
     this.micStream = null;
-    this.processorNode = null;
 
-    // Active HTML5 Audio element for Neural Human TTS playback
     this.currentAudioEl = null;
     this.currentAudioUrl = null;
     this.ttsAbortController = null;
 
-    // VAD & Speaker Echo Protection parameters
-    this.vadSilenceThresholdMs = 450;
-    this.vadEnergyThreshold = 0.028;
+    // Smart Speech Pause Detector parameters
+    // Default 2400ms (2.4s) pause tolerance so natural breathing/thinking pauses never cut off long explanations
+    this.vadSilenceThresholdMs = 2400;
+    this.vadEnergyThreshold = 0.026;
+    this.manualSendHoldMode = false; // When true, never auto-submits until user clicks Send
+
+    // Speaker Echo Protection parameters
     this.echoProtectionEnabled = true;
     this.echoCooldownUntil = 0;
     this.echoTailMs = 550;
@@ -37,31 +53,24 @@ export class AudioAvionicsController {
     this.isUserSpeaking = false;
     this.isBotSpeaking = false;
     this.lastVoiceActivityTime = 0;
-    this.silenceTimer = null;
+    this.lastSpeechEventTimestamp = 0;
     this.resumeMicTimer = null;
 
     // Adjustable voice parameters
     this.customRateMultiplier = 1.0;
     this.customPitchMultiplier = 1.0;
-    this.selectedVoiceURI = ''; // '' = auto-select neural voice from Tutor Persona, or explicit neural voice name
+    this.selectedVoiceURI = '';
 
-    // Web Speech API STT
+    // Web Speech API STT buffer
     this.recognition = null;
     this.recognitionPausedForPlayback = false;
-    this.pendingTranscript = '';
+    this.finalizedTranscript = '';
+    this.currentInterimTranscript = '';
 
-    // Optional Gemini Live WebSocket
-    this.ws = null;
     this.apiKey = '';
-    this.engineMode = 'GEMINI_SERVER';
     this.activeProfile = 'CHARLIE';
     this.activeMode = 1;
-    this.maxWords = 45;
-
-    this.nextPlayTime = 0;
-    this.activeAudioSources = [];
-    this.turnDispatchTimestamp = 0;
-    this.firstAudioReceivedForTurn = false;
+    this.maxWords = 30;
   }
 
   getNeuralVoicesList() {
@@ -87,14 +96,73 @@ export class AudioAvionicsController {
     return this.audioCtx;
   }
 
+  isIncompleteSpokenClause(text = '') {
+    return isIncompleteSpokenClause(text);
+  }
+
+  getCombinedPendingTranscript() {
+    return `${this.finalizedTranscript} ${this.currentInterimTranscript}`.replace(/\s+/g, ' ').trim();
+  }
+
+  hasBufferedSpeech() {
+    return this.getCombinedPendingTranscript().length > 0;
+  }
+
+  setManualHoldMode(enabled) {
+    this.manualSendHoldMode = Boolean(enabled);
+    const hasSpeech = this.hasBufferedSpeech();
+    this.onPauseDetectorUpdate({
+      active: hasSpeech,
+      holdMode: this.manualSendHoldMode,
+      progress: hasSpeech ? 1 : 0,
+      status: this.isUserSpeaking ? 'SPEAKING' : 'PAUSE_COUNTDOWN',
+      extendedForClause: false,
+      elapsedMs: 0,
+      targetMs: this.vadSilenceThresholdMs
+    });
+  }
+
+  setBotSpeakingState(speaking) {
+    this.isBotSpeaking = Boolean(speaking);
+    if (this.isBotSpeaking) {
+      this.engageSpeakerEchoLock();
+    } else {
+      this.releaseSpeakerEchoLock();
+    }
+    this.onBotSpeakingChange(this.isBotSpeaking);
+  }
+
+  clearPendingTranscript() {
+    this.finalizedTranscript = '';
+    this.currentInterimTranscript = '';
+    this.onPauseDetectorUpdate({
+      active: false,
+      holdMode: this.manualSendHoldMode,
+      progress: 0,
+      status: 'IDLE',
+      extendedForClause: false,
+      elapsedMs: 0,
+      targetMs: this.vadSilenceThresholdMs
+    });
+  }
+
   /**
-   * Mutes microphone input & pauses speech recognition while the tutor is speaking
-   * so the microphone NEVER picks up speaker sound or interrupts itself.
+   * Immediately flushes and dispatches any accumulated spoken transcript
+   */
+  flushPendingSpeechNow() {
+    const fullText = this.getCombinedPendingTranscript();
+    this.clearPendingTranscript();
+    if (fullText) {
+      this.onSpeechRecognized(fullText);
+    }
+  }
+
+  /**
+   * Mutes microphone input & pauses speech recognition while the tutor or Manim video is speaking
    */
   engageSpeakerEchoLock() {
-    clearTimeout(this.silenceTimer);
     clearTimeout(this.resumeMicTimer);
-    this.pendingTranscript = '';
+    this.clearPendingTranscript();
     this.isUserSpeaking = false;
 
     if (!this.echoProtectionEnabled) return;
@@ -114,11 +182,11 @@ export class AudioAvionicsController {
   }
 
   /**
-   * Releases the speaker echo lock after a brief room-reverb tail (550ms) once tutor finishes speaking
+   * Releases the speaker echo lock after a brief room-reverb tail (550ms)
    */
   releaseSpeakerEchoLock() {
     clearTimeout(this.resumeMicTimer);
-    this.pendingTranscript = '';
+    this.clearPendingTranscript();
     this.echoCooldownUntil = performance.now() + this.echoTailMs;
 
     this.resumeMicTimer = setTimeout(() => {
@@ -146,9 +214,6 @@ export class AudioAvionicsController {
     }, this.echoTailMs);
   }
 
-  /**
-   * Stops any ongoing Neural TTS or browser speech immediately
-   */
   stopSpeaking(reason = 'USER_STOP') {
     if (this.ttsAbortController) {
       try {
@@ -172,16 +237,6 @@ export class AudioAvionicsController {
 
     if (window.speechSynthesis) {
       window.speechSynthesis.cancel();
-    }
-
-    if (this.activeAudioSources.length > 0) {
-      for (const src of this.activeAudioSources) {
-        try {
-          src.stop();
-        } catch (_) {}
-      }
-      this.activeAudioSources = [];
-      this.nextPlayTime = 0;
     }
 
     if (this.isBotSpeaking) {
@@ -216,6 +271,7 @@ export class AudioAvionicsController {
       source.connect(this.analyser);
 
       this.isMicActive = true;
+      this.clearPendingTranscript();
       this.startWebSpeechRecognition();
 
       if (this.isBotSpeaking && this.echoProtectionEnabled) {
@@ -234,8 +290,8 @@ export class AudioAvionicsController {
     this.isMicActive = false;
     this.isUserSpeaking = false;
     this.recognitionPausedForPlayback = false;
-    clearTimeout(this.silenceTimer);
     clearTimeout(this.resumeMicTimer);
+    this.clearPendingTranscript();
 
     if (this.recognition) {
       try {
@@ -264,7 +320,7 @@ export class AudioAvionicsController {
 
     this.recognition.onresult = (event) => {
       if (this.echoProtectionEnabled && (this.isBotSpeaking || performance.now() < this.echoCooldownUntil)) {
-        this.pendingTranscript = '';
+        this.clearPendingTranscript();
         return;
       }
 
@@ -274,28 +330,22 @@ export class AudioAvionicsController {
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          finalChunk += transcript;
+          finalChunk += transcript + ' ';
         } else {
           interim += transcript;
         }
       }
 
-      if (interim.trim().length > 0) {
-        this.onInterimTranscript(interim.trim());
-      }
+      this.lastSpeechEventTimestamp = performance.now();
 
       if (finalChunk.trim().length > 0) {
-        this.pendingTranscript = (this.pendingTranscript + ' ' + finalChunk).trim();
-        this.onInterimTranscript(this.pendingTranscript);
+        this.finalizedTranscript = `${this.finalizedTranscript} ${finalChunk.trim()}`.replace(/\s+/g, ' ').trim();
+      }
+      this.currentInterimTranscript = interim.trim();
 
-        clearTimeout(this.silenceTimer);
-        this.silenceTimer = setTimeout(() => {
-          if (this.pendingTranscript && !this.isBotSpeaking) {
-            const textToDispatch = this.pendingTranscript;
-            this.pendingTranscript = '';
-            this.onSpeechRecognized(textToDispatch);
-          }
-        }, this.vadSilenceThresholdMs);
+      const combined = this.getCombinedPendingTranscript();
+      if (combined) {
+        this.onInterimTranscript(combined);
       }
     };
 
@@ -317,6 +367,11 @@ export class AudioAvionicsController {
     }
   }
 
+  /**
+   * 60fps VAD + Smart Speech Pause Detector Loop
+   *Monitors both acoustic voice energy AND recognition transcript buffer so long multi-sentence
+   * explanations are never cut off during breathing or mid-sentence pauses.
+   */
   runVadLoop() {
     if (!this.isMicActive || !this.analyser) return;
 
@@ -347,14 +402,49 @@ export class AudioAvionicsController {
 
     if (rms > this.vadEnergyThreshold) {
       this.lastVoiceActivityTime = now;
+      this.lastSpeechEventTimestamp = now;
       if (!this.isUserSpeaking) {
         this.isUserSpeaking = true;
       }
     }
 
     const silenceElapsed = this.lastVoiceActivityTime > 0 ? Math.max(0, now - this.lastVoiceActivityTime) : 0;
-    if (this.isUserSpeaking && silenceElapsed >= this.vadSilenceThresholdMs) {
+    if (this.isUserSpeaking && silenceElapsed >= 350) {
       this.isUserSpeaking = false;
+    }
+
+    // Smart Speech Pause Detector evaluation
+    const combinedTranscript = this.getCombinedPendingTranscript();
+    if (combinedTranscript.length > 0) {
+      const pauseSinceSpeechMs = Math.max(0, now - this.lastSpeechEventTimestamp);
+      const incomplete = this.isIncompleteSpokenClause(combinedTranscript);
+      // Add +1400ms grace period if the student paused on a connector word ("and", "because", "plus", etc.) or still has interim words
+      const extraGraceMs = incomplete || this.currentInterimTranscript.length > 0 ? 1400 : 0;
+      const targetWaitMs = this.vadSilenceThresholdMs + extraGraceMs;
+
+      this.onPauseDetectorUpdate({
+        active: true,
+        holdMode: this.manualSendHoldMode,
+        progress: Math.min(1, pauseSinceSpeechMs / targetWaitMs),
+        status: this.isUserSpeaking ? 'SPEAKING' : 'PAUSE_COUNTDOWN',
+        extendedForClause: incomplete,
+        elapsedMs: Math.round(pauseSinceSpeechMs),
+        targetMs: Math.round(targetWaitMs)
+      });
+
+      if (!this.manualSendHoldMode && pauseSinceSpeechMs >= targetWaitMs && !this.isUserSpeaking) {
+        this.flushPendingSpeechNow();
+      }
+    } else {
+      this.onPauseDetectorUpdate({
+        active: false,
+        holdMode: this.manualSendHoldMode,
+        progress: 0,
+        status: 'IDLE',
+        extendedForClause: false,
+        elapsedMs: 0,
+        targetMs: this.vadSilenceThresholdMs
+      });
     }
 
     this.onVadStateChange({
@@ -368,15 +458,10 @@ export class AudioAvionicsController {
     requestAnimationFrame(() => this.runVadLoop());
   }
 
-  /**
-   * Speaks response using Studio-Grade Gemini Neural Human Voice (/api/tts),
-   * while locking the microphone so it never hears the speaker output.
-   */
   async speakCalibratedBurst(cleanText, profileKey = 'CHARLIE') {
     const startTs = performance.now();
     this.stopSpeaking('NEW_BURST');
 
-    // Lock microphone BEFORE audio synthesis/playback begins
     this.isBotSpeaking = true;
     this.engageSpeakerEchoLock();
     this.onBotSpeakingChange(true);
@@ -438,7 +523,7 @@ export class AudioAvionicsController {
     }
   }
 
-  speakBrowserFallback(cleanText, profileKey = 'CHARLIE') {
+  speakBrowserFallback(cleanText, _profileKey = 'CHARLIE') {
     if (!('speechSynthesis' in window)) {
       this.isBotSpeaking = false;
       this.onBotSpeakingChange(false);

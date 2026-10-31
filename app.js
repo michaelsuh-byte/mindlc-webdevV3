@@ -1,10 +1,13 @@
 /**
- * Ontario STEM Socratic Voice Tutor — Tri-Channel HUD, Telemetry & Gemini Chat Controller
+ * Ontario STEM Socratic Voice Tutor — Tri-Channel HUD, Interactive Graph, Pause Detector & Manim Video Controller
  * Includes:
  *  1. Strict Pre-Render LaTeX Screening Layer (`sanitizeLatexForHud`) + Clean History Normalization
  *  2. Stoppable / Pausable Deliberation Timer (`⏸ Pause`, `⏹ Stop Timer`, auto-stop at t_expected)
  *  3. High-Density Compact Chat Layout
  *  4. Context-Aware Varied Check-In Messages (`generateContextualCheckIn`)
+ *  5. Open-Source Interactive Graphing Engine (`createInteractiveGraphElement`) embedded in chat bubbles
+ *  6. Smart Speech Pause Detector Device (acoustic + clause-aware pause meter + Hold Mode)
+ *  7. End-of-Session Manim Instructional Video Offer & Synchronized Voice Canvas Player (`createManimVideoElement`)
  */
 
 import {
@@ -17,6 +20,9 @@ import {
   sanitizeLatexForHud,
   buildSystemInstruction,
   parseTriChannelPacket,
+  isGraphRequestedByUser,
+  buildFallbackGraphSpec,
+  detectManimConsentIntent,
   computeRetroactiveAttribution,
   generateContextualCheckIn,
   detectSystemCommand,
@@ -24,6 +30,8 @@ import {
 } from './svs-engine.js';
 
 import { AudioAvionicsController } from './audio-avionics.js';
+import { createInteractiveGraphElement } from './graph-engine.js';
+import { createManimVideoElement } from './manim-engine.js';
 
 class SocraticGeminiChatApp {
   constructor() {
@@ -35,6 +43,11 @@ class SocraticGeminiChatApp {
     this.lastSpokenBurst = 'Hi there! What Ontario high school math, physics, or chemistry problem are we solving today?';
     this.lastStudentUtterance = '';
     this.lastHudLatex = '';
+    this.lastGraphSpec = null;
+
+    // End-of-Session Manim Consent State
+    this.awaitingManimConsent = false;
+    this.activeManimController = null;
 
     // Section 10 & 20: Telemetry & Deliberation Timer State
     this.currentTelemetry = { ...DEFAULT_TELEMETRY };
@@ -52,6 +65,7 @@ class SocraticGeminiChatApp {
 
     this.avionics = new AudioAvionicsController({
       onVadStateChange: (vad) => this.handleVadUpdate(vad),
+      onPauseDetectorUpdate: (state) => this.handlePauseDetectorUI(state),
       onInterimTranscript: (interim) => {
         const input = document.getElementById('studentInput');
         if (input) input.value = interim;
@@ -80,7 +94,7 @@ class SocraticGeminiChatApp {
 
     this.appendChatMessage(
       'svs',
-      'Hi! I am your Ontario high school STEM tutor with Tri-Channel Math HUD, Deliberation Telemetry, and natural human voice. Pick a starter problem below or ask any STEM question.',
+      'Hi! I am your Ontario high school STEM tutor with Tri-Channel Math HUD, Interactive Graphing, Smart Speech Pause Detection, and Manim Instructional Video generation. Pick a starter problem below or ask any STEM question.',
       `${VOCAL_PROFILES[this.activeProfileKey].code} • ${FLIGHT_MODES[this.activeModeId].name}`,
       ''
     );
@@ -99,6 +113,22 @@ class SocraticGeminiChatApp {
     document.getElementById('btnCloseParams').addEventListener('click', () => {
       drawer.hidden = true;
     });
+
+    // Top Bar: Plot Interactive Graph on Demand
+    const btnPlotCurrent = document.getElementById('btnPlotCurrent');
+    if (btnPlotCurrent) {
+      btnPlotCurrent.addEventListener('click', () => {
+        this.plotCurrentGraphInChat();
+      });
+    }
+
+    // Top Bar: End Session & Offer Manim Video on Demand
+    const btnOfferManim = document.getElementById('btnOfferManim');
+    if (btnOfferManim) {
+      btnOfferManim.addEventListener('click', () => {
+        this.offerEndOfSessionManimVideo();
+      });
+    }
 
     const btnToggleMic = document.getElementById('btnToggleMic');
     btnToggleMic.addEventListener('click', async () => {
@@ -119,8 +149,31 @@ class SocraticGeminiChatApp {
       }
     });
 
+    // Smart Speech Pause Detector Controls: Hold Mode & Send Now
+    const btnToggleHoldMode = document.getElementById('btnToggleHoldMode');
+    if (btnToggleHoldMode) {
+      btnToggleHoldMode.addEventListener('click', () => {
+        const nextHold = !this.avionics.manualSendHoldMode;
+        this.avionics.setManualHoldMode(nextHold);
+        btnToggleHoldMode.classList.toggle('active', nextHold);
+        btnToggleHoldMode.textContent = nextHold
+          ? '🔒 Hold Mode (Manual Send)'
+          : '🔓 Auto-Send Pause';
+      });
+    }
+
+    const btnFlushSpeechNow = document.getElementById('btnFlushSpeechNow');
+    if (btnFlushSpeechNow) {
+      btnFlushSpeechNow.addEventListener('click', () => {
+        this.avionics.flushPendingSpeechNow();
+      });
+    }
+
     document.getElementById('btnBargeIn').addEventListener('click', () => {
       this.avionics.stopSpeaking('USER_STOP_BUTTON');
+      if (this.activeManimController) {
+        this.activeManimController.stop();
+      }
     });
 
     document.getElementById('btnReplayLast').addEventListener('click', () => {
@@ -163,10 +216,16 @@ class SocraticGeminiChatApp {
     });
 
     document.getElementById('btnClearLog').addEventListener('click', () => {
+      if (this.activeManimController) {
+        this.activeManimController.stop();
+        this.activeManimController = null;
+      }
       this.conversationHistory = [];
       this.stopScratchpadDeliberationClock();
       this.hasActiveProblemTurn = false;
+      this.awaitingManimConsent = false;
       this.lastHudLatex = '';
+      this.lastGraphSpec = null;
       this.currentTelemetry = { ...DEFAULT_TELEMETRY };
       this.updateTelemetryUI(this.currentTelemetry);
       document.getElementById('commsLog').innerHTML = '';
@@ -181,6 +240,11 @@ class SocraticGeminiChatApp {
 
     document.getElementById('commsForm').addEventListener('submit', (e) => {
       e.preventDefault();
+      // If speech recognition has buffered words in Hold Mode, flush them first
+      if (this.avionics.hasBufferedSpeech()) {
+        this.avionics.flushPendingSpeechNow();
+        return;
+      }
       const input = document.getElementById('studentInput');
       const text = input.value.trim();
       if (!text) return;
@@ -223,7 +287,7 @@ class SocraticGeminiChatApp {
     vadSlider.addEventListener('input', () => {
       const ms = Number(vadSlider.value);
       this.avionics.vadSilenceThresholdMs = ms;
-      document.getElementById('vadThresholdValue').textContent = `${ms} ms`;
+      document.getElementById('vadThresholdValue').textContent = `${(ms / 1000).toFixed(1)} s`;
     });
 
     const saveBtn = document.getElementById('btnSaveConfig');
@@ -235,6 +299,225 @@ class SocraticGeminiChatApp {
           'Active: Gemini 2.5 Flash + Tri-Channel Engine';
       });
     }
+  }
+
+  /**
+   * Updates the Smart Speech Pause Detector pill above the input bar
+   */
+  handlePauseDetectorUI(state) {
+    const pill = document.getElementById('pauseDetectorPill');
+    const label = document.getElementById('pauseDetectorLabel');
+    const fill = document.getElementById('pauseDetectorFill');
+    const sendNowBtn = document.getElementById('btnFlushSpeechNow');
+    if (!pill || !label || !fill) return;
+
+    if (!state.active && !state.holdMode) {
+      pill.hidden = true;
+      fill.style.width = '0%';
+      if (sendNowBtn) sendNowBtn.hidden = true;
+      return;
+    }
+
+    if (state.holdMode && !state.active) {
+      pill.hidden = false;
+      label.textContent = 'Hold Mode: Speak freely — click Send when finished';
+      fill.style.width = '0%';
+      if (sendNowBtn) sendNowBtn.hidden = true;
+      return;
+    }
+
+    pill.hidden = false;
+    if (sendNowBtn) sendNowBtn.hidden = false;
+
+    if (state.holdMode) {
+      label.textContent = 'Hold Mode: Capturing speech (click Send Now when done)';
+      fill.style.width = '100%';
+      fill.style.backgroundColor = '#fdd663';
+      return;
+    }
+
+    const pct = Math.min(100, Math.round((state.progress || 0) * 100));
+    fill.style.width = `${pct}%`;
+
+    if (state.status === 'SPEAKING') {
+      label.textContent = state.extendedForClause
+        ? 'Listening (mid-sentence pause grace active)...'
+        : 'Listening to your explanation...';
+      fill.style.backgroundColor = '#81c995';
+    } else if (state.status === 'PAUSE_COUNTDOWN') {
+      const remainSec = Math.max(0, ((state.targetMs - state.elapsedMs) / 1000)).toFixed(1);
+      label.textContent = state.extendedForClause
+        ? `Mid-thought pause detected — waiting ${remainSec}s`
+        : `Pause detected — sending in ${remainSec}s`;
+      fill.style.backgroundColor = '#a8c7fa';
+    }
+  }
+
+  /**
+   * Plots the current or most recent equation in an interactive graph card in the chat
+   */
+  plotCurrentGraphInChat() {
+    const spec =
+      this.lastGraphSpec ||
+      buildFallbackGraphSpec(this.lastStudentUtterance, this.lastHudLatex || 'x^2 - 4');
+    this.lastGraphSpec = spec;
+
+    const spoken = `Here is the interactive graph for ${spec.title || 'our function'}. You can drag to pan, scroll to zoom, hover to inspect roots and extrema, or add another function below.`;
+    const profile = VOCAL_PROFILES[this.activeProfileKey];
+    const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
+
+    this.appendChatMessage(
+      'svs',
+      spoken,
+      `${profile.code} (${voiceName}) • Interactive Graph Engine`,
+      this.lastHudLatex,
+      { graphSpec: spec }
+    );
+    this.lastSpokenBurst = spoken;
+    this.avionics.speakCalibratedBurst(spoken, this.activeProfileKey);
+  }
+
+  /**
+   * Explicitly ends the current question session and asks the user if they want a Manim instructional video
+   */
+  offerEndOfSessionManimVideo() {
+    this.awaitingManimConsent = true;
+    const spoken =
+      'We have completed this question session! Would you like to see a full instructional video using the Manim engine and voice explanation on the question we just discussed?';
+    const profile = VOCAL_PROFILES[this.activeProfileKey];
+    const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
+
+    this.appendChatMessage(
+      'svs',
+      spoken,
+      `${profile.code} (${voiceName}) • End of Session Offer`,
+      this.lastHudLatex,
+      { offerManim: true }
+    );
+    this.lastSpokenBurst = spoken;
+    this.avionics.speakCalibratedBurst(spoken, this.activeProfileKey);
+  }
+
+  /**
+   * Handles the user's YES or NO response to the End-of-Session Manim video prompt
+   */
+  async handleManimConsentDecision(decision) {
+    this.awaitingManimConsent = false;
+    const profile = VOCAL_PROFILES[this.activeProfileKey];
+    const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
+
+    if (decision === 'NO') {
+      const noReply = 'No problem at all! Let me know what STEM question or topic you would like to explore next.';
+      this.appendChatMessage(
+        'svs',
+        noReply,
+        `${profile.code} (${voiceName}) • Session Complete`,
+        ''
+      );
+      this.lastSpokenBurst = noReply;
+      this.avionics.speakCalibratedBurst(noReply, this.activeProfileKey);
+      return;
+    }
+
+    // User chose YES -> Generate Manim Storyboard and render Manim Canvas Video Player in chat
+    const loadingRow = this.appendThinkingBubble(
+      `Rendering Manim instructional video scenes & synchronizing ${voiceName} voiceover...`
+    );
+
+    try {
+      const storyboard = await this.fetchManimStoryboard();
+      loadingRow.remove();
+
+      const introText = `Here is your full Manim instructional video for "${storyboard.title}", narrated with the ${voiceName} voice model.`;
+      this.appendChatMessage(
+        'svs',
+        introText,
+        `${profile.code} (${voiceName}) • Manim Engine Video`,
+        '',
+        { manimStoryboard: storyboard }
+      );
+    } catch (err) {
+      loadingRow.remove();
+      console.warn('Manim generation error, using fallback storyboard:', err);
+      const fallbackStoryboard = this.buildClientFallbackManimStoryboard();
+      this.appendChatMessage(
+        'svs',
+        `Here is your full Manim instructional video for "${fallbackStoryboard.title}", narrated with the ${voiceName} voice model.`,
+        `${profile.code} (${voiceName}) • Manim Engine Video`,
+        '',
+        { manimStoryboard: fallbackStoryboard }
+      );
+    }
+  }
+
+  async fetchManimStoryboard() {
+    const topicHint =
+      this.lastStudentUtterance ||
+      this.lastHudLatex ||
+      'Ontario Secondary STEM Problem Walkthrough';
+
+    const res = await fetch('/api/manim-script', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        history: this.conversationHistory,
+        topicHint,
+        apiKey: this.geminiApiKey || undefined
+      })
+    });
+
+    if (!res.ok) {
+      throw new Error(`Manim script HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    if (!data.storyboard || !Array.isArray(data.storyboard.scenes)) {
+      throw new Error('Invalid storyboard payload');
+    }
+    return data.storyboard;
+  }
+
+  buildClientFallbackManimStoryboard() {
+    const cleanLatex = sanitizeLatexForHud(this.lastHudLatex || 'f(x) = 2x^2 + 5x + 2');
+    const fnExpr =
+      this.lastGraphSpec?.functions?.[0]?.expr ||
+      '2*x^2 + 5*x + 2';
+
+    return {
+      title: 'Step-by-Step STEM Concept Synthesis',
+      course: 'Ontario STEM (MCR3U / MCV4U)',
+      xDomain: [-6, 6],
+      yDomain: [-6, 10],
+      scenes: [
+        {
+          heading: 'Scene 1: Problem Formulation',
+          latex: cleanLatex,
+          narration: 'Let us review the core mathematical relationship we explored in this session and identify its structure.',
+          graphExpr: fnExpr,
+          highlightPoint: null
+        },
+        {
+          heading: 'Scene 2: Algebraic Decomposition',
+          latex: '(2x + 1)(x + 2) = 0',
+          narration: 'By decomposing the expression into its constituent factors, each linear term reveals an invariant property of the system.',
+          graphExpr: fnExpr,
+          highlightPoint: [-0.5, 0]
+        },
+        {
+          heading: 'Scene 3: Critical Points & Roots',
+          latex: 'x_1 = -0.5, \\quad x_2 = -2',
+          narration: 'Setting each factor to zero pinpoints the exact horizontal intercepts where the function crosses the axis.',
+          graphExpr: fnExpr,
+          highlightPoint: [-2, 0]
+        },
+        {
+          heading: 'Scene 4: Geometric & Graphical Verification',
+          latex: 'y_{min} = -1.125 \\text{ at } x = -1.25',
+          narration: 'Tracing the continuous curve across the coordinate plane confirms the vertex and connects the algebra to its visual geometry.',
+          graphExpr: fnExpr,
+          highlightPoint: [-1.25, -1.125]
+        }
+      ]
+    };
   }
 
   /**
@@ -488,10 +771,28 @@ class SocraticGeminiChatApp {
     }
 
     this.softPingIssuedForTurn = false;
-    this.lastStudentUtterance = utterance;
     this.avionics.stopSpeaking('NEW_STUDENT_TURN');
 
     this.appendChatMessage('student', utterance);
+
+    // Check if we are currently waiting for Yes/No consent for the End-of-Session Manim video
+    if (this.awaitingManimConsent) {
+      const consentIntent = detectManimConsentIntent(utterance);
+      if (consentIntent === 'YES' || consentIntent === 'NO') {
+        await this.handleManimConsentDecision(consentIntent);
+        return;
+      }
+      // If the student asked a new question instead of answering Yes/No, clear consent wait and continue
+      this.awaitingManimConsent = false;
+    }
+
+    // Also allow explicit voice request like "make a manim video" at any time
+    if (/\b(make|create|show|generate)\b[\s\S]*\b(manim|instructional\s+video)\b/i.test(utterance)) {
+      await this.handleManimConsentDecision('YES');
+      return;
+    }
+
+    this.lastStudentUtterance = utterance;
 
     const retroactiveTelemetry = computeRetroactiveAttribution(
       utterance,
@@ -518,6 +819,7 @@ class SocraticGeminiChatApp {
         const parsedPacket = parseTriChannelPacket(llmReply, this.maxWords, retroactiveTelemetry);
         const cleanAssistantHistoryText =
           (parsedPacket.hudLatex ? `<hud>${parsedPacket.hudLatex}</hud>\n` : '') +
+          (parsedPacket.graphSpec ? `<graph>${JSON.stringify(parsedPacket.graphSpec)}</graph>\n` : '') +
           `<telemetry>${JSON.stringify(parsedPacket.telemetry)}</telemetry>\n` +
           parsedPacket.spokenText;
 
@@ -526,7 +828,8 @@ class SocraticGeminiChatApp {
         this.hasActiveProblemTurn = true;
         this.emitTriChannelResponse(llmReply, {
           speak: true,
-          fallbackTelemetry: retroactiveTelemetry
+          fallbackTelemetry: retroactiveTelemetry,
+          studentUtterance: utterance
         });
         return;
       }
@@ -539,7 +842,8 @@ class SocraticGeminiChatApp {
     const simResult = generateOfflineSocraticResponse(utterance, this.activeModeId, this.activeProfileKey);
     this.emitTriChannelResponse(simResult.text, {
       speak: true,
-      fallbackTelemetry: retroactiveTelemetry
+      fallbackTelemetry: retroactiveTelemetry,
+      studentUtterance: utterance
     });
   }
 
@@ -569,14 +873,14 @@ class SocraticGeminiChatApp {
     return data.reply || null;
   }
 
-  appendThinkingBubble() {
+  appendThinkingBubble(customText = 'Thinking...') {
     const log = document.getElementById('commsLog');
     const row = document.createElement('div');
     row.className = 'chat-msg svs';
     row.innerHTML = `
       <div class="msg-avatar">✦</div>
       <div class="msg-bubble" style="color: var(--text-muted); font-style: italic;">
-        Thinking...
+        ${customText}
       </div>
     `;
     log.appendChild(row);
@@ -584,13 +888,35 @@ class SocraticGeminiChatApp {
     return row;
   }
 
-  emitTriChannelResponse(rawText, options = { speak: true, badge: '', fallbackTelemetry: null }) {
+  emitTriChannelResponse(
+    rawText,
+    options = { speak: true, badge: '', fallbackTelemetry: null, studentUtterance: '' }
+  ) {
     const t0 = performance.now();
     const packet = parseTriChannelPacket(rawText, this.maxWords, options.fallbackTelemetry);
 
     if (packet.hudLatex) {
       this.lastHudLatex = packet.hudLatex;
       this.updatePinnedLiveHud(packet.hudLatex, performance.now() - t0);
+    }
+
+    // Guarantee a visual graph if `<graph>` was emitted OR if the user asked for a graph
+    let graphSpec = packet.graphSpec;
+    if (!graphSpec && isGraphRequestedByUser(options.studentUtterance || this.lastStudentUtterance)) {
+      graphSpec = buildFallbackGraphSpec(
+        options.studentUtterance || this.lastStudentUtterance,
+        packet.hudLatex || this.lastHudLatex
+      );
+    }
+    if (graphSpec) {
+      this.lastGraphSpec = graphSpec;
+    }
+
+    // Detect if this turn completes the explanation of a question ("a session")
+    const spokenMentionsManim = /\b(manim|instructional\s+video)\b/i.test(packet.spokenText || '');
+    const isSessionComplete = Boolean(packet.telemetry.session_complete || spokenMentionsManim);
+    if (isSessionComplete) {
+      this.awaitingManimConsent = true;
     }
 
     this.currentTelemetry = packet.telemetry;
@@ -604,7 +930,10 @@ class SocraticGeminiChatApp {
       ? `${profile.code} (${voiceName}) • ${options.badge}`
       : `${profile.code} (${voiceName}) • ${mode.name} • ${tierLabel}`;
 
-    this.appendChatMessage('svs', packet.spokenText, footerTag, packet.hudLatex);
+    this.appendChatMessage('svs', packet.spokenText, footerTag, packet.hudLatex, {
+      graphSpec,
+      offerManim: isSessionComplete
+    });
 
     if (packet.spokenText) {
       this.lastSpokenBurst = packet.spokenText;
@@ -711,7 +1040,7 @@ class SocraticGeminiChatApp {
     targetEl.textContent = screenedLatex;
   }
 
-  appendChatMessage(role, spokenText, footerText = '', hudLatex = '') {
+  appendChatMessage(role, spokenText, footerText = '', hudLatex = '', attachments = {}) {
     const log = document.getElementById('commsLog');
     const row = document.createElement('div');
     row.className = `chat-msg ${role}`;
@@ -742,6 +1071,81 @@ class SocraticGeminiChatApp {
     const p = document.createElement('div');
     p.textContent = cleanVisibleText;
     bubble.appendChild(p);
+
+    // 1. Interactive Open-Source Graphing Calculator Card inside the chat bubble
+    if (role === 'svs' && attachments.graphSpec) {
+      const graphWidget = createInteractiveGraphElement(attachments.graphSpec);
+      bubble.appendChild(graphWidget);
+    }
+
+    // 2. End-of-Session Manim Instructional Video Consent Offer Card
+    if (role === 'svs' && attachments.offerManim) {
+      const offerCard = document.createElement('div');
+      offerCard.className = 'manim-offer-card';
+
+      const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
+      offerCard.innerHTML = `
+        <div class="manim-offer-title">🎬 End-of-Session Manim Instructional Video</div>
+        <div class="manim-offer-desc">
+          Would you like me to generate a full animated Manim instructional video in the chat (narrated by <strong>${voiceName}</strong>) for the question we just discussed?
+        </div>
+      `;
+
+      const actions = document.createElement('div');
+      actions.className = 'manim-offer-actions';
+
+      const yesBtn = document.createElement('button');
+      yesBtn.type = 'button';
+      yesBtn.className = 'manim-yes-btn';
+      yesBtn.textContent = '🎬 Yes, Create Manim Video';
+
+      const noBtn = document.createElement('button');
+      noBtn.type = 'button';
+      noBtn.className = 'manim-no-btn';
+      noBtn.textContent = '✕ No Thanks';
+
+      yesBtn.addEventListener('click', () => {
+        yesBtn.disabled = true;
+        noBtn.disabled = true;
+        this.handleManimConsentDecision('YES');
+      });
+
+      noBtn.addEventListener('click', () => {
+        yesBtn.disabled = true;
+        noBtn.disabled = true;
+        this.handleManimConsentDecision('NO');
+      });
+
+      actions.appendChild(yesBtn);
+      actions.appendChild(noBtn);
+      offerCard.appendChild(actions);
+      bubble.appendChild(offerCard);
+    }
+
+    // 3. Embedded Manim `<canvas>` Video Player Element
+    if (role === 'svs' && attachments.manimStoryboard) {
+      if (this.activeManimController) {
+        this.activeManimController.stop();
+      }
+      const profile = VOCAL_PROFILES[this.activeProfileKey] || VOCAL_PROFILES.CHARLIE;
+      const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
+      const playbackRate = Math.max(
+        0.75,
+        Math.min(1.35, profile.baseRate * this.avionics.customRateMultiplier)
+      );
+
+      const manimWidget = createManimVideoElement(attachments.manimStoryboard, {
+        voiceName,
+        playbackRate,
+        apiKey: this.geminiApiKey,
+        onPlaybackStateChange: (playing) => {
+          this.avionics.setBotSpeakingState(playing);
+        }
+      });
+
+      this.activeManimController = manimWidget.controller;
+      bubble.appendChild(manimWidget.element);
+    }
 
     if (role === 'svs') {
       const footer = document.createElement('div');
@@ -801,8 +1205,8 @@ class SocraticGeminiChatApp {
       micBtnLabel.textContent = 'Listening';
       statusDot.className = 'status-dot listening';
       vadStateTag.textContent = this.isUserSpeaking
-        ? 'Hearing you speak...'
-        : 'Listening for your voice (click Listening to turn off mic)';
+        ? 'Hearing you speak — smart pause detector active...'
+        : 'Listening for your voice (2.4s smart pause detector + mid-sentence grace)...';
     }
   }
 }

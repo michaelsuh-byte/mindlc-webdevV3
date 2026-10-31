@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Ontario STEM Socratic Tutor — Tri-Channel HUD, Telemetry &amp; Voice Chat</title>
+  <title>Ontario STEM Socratic Tutor — Graph, Manim Video, Telemetry &amp; Voice Chat</title>
   <!-- KaTeX for Instant 0ms <hud> LaTeX Rendering -->
   <link
     rel="stylesheet"
@@ -25,7 +25,7 @@
         <span class="sparkle-icon">✦</span>
         <div>
           <h1>Ontario STEM Tutor</h1>
-          <span class="subtitle">Grades 9–12 • Math HUD + Telemetry + Voice</span>
+          <span class="subtitle">Grades 9–12 • Interactive Graph + Manim Video + Natural Voice</span>
         </div>
       </div>
 
@@ -35,11 +35,17 @@
       </div>
 
       <div class="top-actions">
+        <button class="icon-btn" id="btnPlotCurrent" title="Plot an interactive graph of the current equation">
+          📈 Plot Graph
+        </button>
+        <button class="icon-btn" id="btnOfferManim" title="Finish current question session & offer Manim instructional video">
+          🎬 End Session / Video
+        </button>
         <button class="icon-btn" id="btnClearLog" title="Start a new conversation">
           New Chat
         </button>
         <button class="icon-btn primary-outline" id="btnToggleParams" title="Show or hide model parameters & telemetry">
-          ⚙ Controls &amp; Telemetry
+          ⚙ Controls
         </button>
       </div>
     </header>
@@ -105,7 +111,7 @@
 
         <!-- LARGE SCROLLABLE CHAT FEED -->
         <div class="chat-scroll-area" id="commsLog" aria-live="polite">
-          <!-- Messages rendered here -->
+          <!-- Messages, Interactive Graphs, and Manim Videos rendered here -->
         </div>
 
         <!-- COMPACT STARTER PROMPTS BAR -->
@@ -117,9 +123,29 @@
 
         <!-- BOTTOM GEMINI PILL INPUT BAR -->
         <div class="input-dock">
+          <!-- VOICE STATUS + SMART SPEECH PAUSE DETECTOR DEVICE -->
           <div class="voice-status-banner" id="voiceStatusBanner">
             <span class="status-dot" id="statusDot"></span>
             <span id="vadStateTag">Mic off — click Speak to talk</span>
+
+            <!-- SPEECH PAUSE DETECTOR INDICATOR -->
+            <div class="pause-detector-pill" id="pauseDetectorPill" hidden>
+              <span id="pauseDetectorLabel">Pause Detector: 0.0s / 2.4s</span>
+              <div class="pause-detector-track">
+                <div class="pause-detector-fill" id="pauseDetectorFill"></div>
+              </div>
+              <button type="button" class="send-now-mini-btn" id="btnFlushSpeechNow">Send Now</button>
+            </div>
+
+            <button
+              type="button"
+              class="hold-mode-btn"
+              id="btnToggleHoldMode"
+              title="When enabled, microphone never auto-sends during long pauses—click Send when finished speaking"
+            >
+              ✋ Hold Mode: Off
+            </button>
+
             <button type="button" class="stop-voice-btn" id="btnBargeIn" hidden>
               ■ Stop Speaking
             </button>
@@ -139,7 +165,7 @@
             <input
               type="text"
               id="studentInput"
-              placeholder="Ask any Ontario Grade 9–12 math, physics, or chemistry question..."
+              placeholder="Ask any STEM question, ask to 'graph y = ...', or speak a multi-step explanation..."
               autocomplete="off"
             />
 
@@ -186,7 +212,7 @@
           </div>
 
           <div class="telemetry-json-box" id="telemetryJsonBox">
-            &lt;telemetry&gt;{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":85,"i_reg":85,"cli":35,"hint_level":0}&lt;/telemetry&gt;
+            &lt;telemetry&gt;{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":85,"i_reg":85,"cli":35,"hint_level":0,"session_complete":false}&lt;/telemetry&gt;
           </div>
 
           <div class="scratchpad-toggle-row">
@@ -219,19 +245,27 @@
         <div class="param-group toggle-card">
           <div>
             <label class="param-label" for="chkEchoGuard">Speaker Echo Protection</label>
-            <p class="param-hint">Mutes microphone while the tutor is speaking so it never hears itself.</p>
+            <p class="param-hint">Mutes microphone while the tutor or Manim video is speaking.</p>
           </div>
           <input type="checkbox" id="chkEchoGuard" checked class="toggle-checkbox" />
         </div>
 
-        <!-- 4. SLIDERS FOR MODEL PARAMETERS -->
+        <!-- 4. SLIDERS FOR MODEL & SPEECH PAUSE DETECTOR PARAMETERS -->
+        <div class="param-group">
+          <div class="param-label-row">
+            <label class="param-label" for="vadThresholdSlider">Speech Pause Detector Wait</label>
+            <span class="slider-val" id="vadThresholdValue">2.4 s</span>
+          </div>
+          <input type="range" id="vadThresholdSlider" min="1000" max="5000" step="200" value="2400" />
+          <span class="param-hint">Wait time when you pause mid-speech (adds +1.4s automatically on incomplete clauses).</span>
+        </div>
+
         <div class="param-group">
           <div class="param-label-row">
             <label class="param-label" for="maxWordsSlider">Spoken Audio Ceiling</label>
             <span class="slider-val" id="maxWordsValue">30 words</span>
           </div>
           <input type="range" id="maxWordsSlider" min="15" max="60" step="5" value="30" />
-          <span class="param-hint">Channel 3 spoken limit (&lt;hud&gt; and &lt;telemetry&gt; are stripped).</span>
         </div>
 
         <div class="param-group">
@@ -250,15 +284,6 @@
           <input type="range" id="pitchSlider" min="0.90" max="1.10" step="0.02" value="1.00" />
         </div>
 
-        <div class="param-group">
-          <div class="param-label-row">
-            <label class="param-label" for="vadThresholdSlider">Mic Pause Sensitivity</label>
-            <span class="slider-val" id="vadThresholdValue">450 ms</span>
-          </div>
-          <input type="range" id="vadThresholdSlider" min="250" max="900" step="50" value="450" />
-          <span class="param-hint">How long to wait after you finish speaking before sending your voice turn.</span>
-        </div>
-
         <!-- 5. OPTIONAL GEMINI API CONNECTION -->
         <details class="advanced-details">
           <summary>Custom Gemini API Key (Optional)</summary>
@@ -272,7 +297,7 @@
               autocomplete="off"
             />
             <button type="button" class="apply-api-btn" id="btnSaveConfig">Save Key</button>
-            <span class="param-hint" id="engineStatusBadge">Active: Gemini 2.5 Flash + Tri-Channel Engine</span>
+            <span class="param-hint" id="engineStatusBadge">Active: Gemini 2.5 Flash + Graph &amp; Manim Engine</span>
           </div>
         </details>
       </aside>
