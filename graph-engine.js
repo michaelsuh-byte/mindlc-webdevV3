@@ -1,12 +1,12 @@
 /**
- * Refined Desmos / GeoGebra-Style HiDPI Interactive Graphing Engine (`graph-engine.js`)
+ * Refined HiDPI Interactive Graphing Engine (`graph-engine.js`)
  * Features:
  *  - Razor-sharp HiDPI / Retina (`window.devicePixelRatio`) canvas rendering
- *  - Multi-level Desmos-style minor & major coordinate gridlines + haloed axis tick labels
- *  - Supports both string expressions and `{ expr, label, color }` objects with KaTeX legend rendering
- *  - Automatic root, vertex/extremum, and y-intercept detection with pinned interactive points
- *  - Refined 2D Euclidean proximity hover: moving the cursor across empty space does NOT drag a trace dot;
- *    point coordinates appear only when hovering directly near a curve/key point (within 13px) or when clicking & dragging along a curve.
+ *  - Multi-level minor & major coordinate gridlines + haloed axis tick labels
+ *  - Structured Key Graph Features Table (Roots, Vertex/Extrema, y-intercept) for instant legibility
+ *  - Stationary key point highlighting (no moving dots or distracting motion)
+ *  - True 2D Euclidean proximity inspection: coordinates appear only when hovering directly on a curve/key point
+ *    or clicking a row in the Key Features Table.
  */
 
 const GRAPH_COLORS = ['#38bdf8', '#4ade80', '#f472b6', '#facc15', '#a78bfa'];
@@ -29,13 +29,10 @@ export function compileMathExpression(rawInput = '') {
     .trim()
     .replace(/^\$\$|\$\$$/g, '')
     .replace(/^\$|\$$/g, '')
-    // Strip leading "y =", "f(x) =", "g(x) =", "M(x) ="
     .replace(/^[a-zA-Z]\s*\(\s*x\s*\)\s*=\s*/i, '')
     .replace(/^y\s*=\s*/i, '')
-    // Convert LaTeX fractions \frac{a}{b} -> ((a)/(b))
     .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '(($1)/($2))')
     .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '(($1)/($2))')
-    // Convert LaTeX \sqrt{a} -> sqrt(a)
     .replace(/\\sqrt\{([^{}]+)\}/g, 'sqrt($1)')
     .replace(/\\cdot|\\times/g, '*')
     .replace(/\\pi\b/g, 'PI')
@@ -44,7 +41,6 @@ export function compileMathExpression(rawInput = '') {
     .replace(/\}/g, ')')
     .replace(/\\/g, '');
 
-  // If it's an equation like "2x^2 + 5x + 2 = 0", plot LHS - RHS
   if (expr.includes('=')) {
     const parts = expr.split('=');
     const lhs = parts[0].trim();
@@ -56,7 +52,6 @@ export function compileMathExpression(rawInput = '') {
     }
   }
 
-  // Insert implicit multiplication: e.g. "2x" -> "2*x", "3(x+1)" -> "3*(x+1)", "(x+1)(x-1)" -> "(x+1)*(x-1)"
   expr = expr
     .replace(/(\d)\s*([a-zA-Z(])/g, '$1*$2')
     .replace(/(\))\s*(\d|[a-zA-Z(])/g, '$1*$2')
@@ -84,7 +79,6 @@ export function compileMathExpression(rawInput = '') {
     match => fnMap[match] || match
   );
 
-  // Replace standalone e with Math.E
   expr = expr.replace(/\be\b/g, 'Math.E');
 
   try {
@@ -113,6 +107,7 @@ export function findCurveFeatures(fn, xMin = -10, xMax = 10) {
         x: 0,
         y: y0,
         title: 'y-intercept',
+        meaning: 'Value at x = 0',
         label: `(0, ${formatNum(y0)})`,
         type: 'intercept'
       });
@@ -128,7 +123,7 @@ export function findCurveFeatures(fn, xMin = -10, xMax = 10) {
     const currY = fn(currX);
 
     if (Number.isFinite(prevY) && Number.isFinite(currY)) {
-      // 2. Root detection (sign change across y = 0, excluding vertical asymptotes)
+      // 2. Root detection (f(x) = 0)
       if ((prevY <= 0 && currY >= 0) || (prevY >= 0 && currY <= 0)) {
         if (Math.abs(currY - prevY) < 40) {
           const rootX = refineBisectionRoot(fn, prevX, currX);
@@ -138,7 +133,8 @@ export function findCurveFeatures(fn, xMin = -10, xMax = 10) {
               features.push({
                 x: rootX,
                 y: 0,
-                title: 'Root',
+                title: 'Root (x-intercept)',
+                meaning: 'f(x) = 0',
                 label: `(${formatNum(rootX)}, 0)`,
                 type: 'root'
               });
@@ -155,10 +151,12 @@ export function findCurveFeatures(fn, xMin = -10, xMax = 10) {
             const vx = refineExtremum(fn, prevX - dx, currX);
             const vy = fn(vx);
             if (Number.isFinite(vy) && !features.some(f => Math.abs(f.x - vx) < 0.2 && f.type === 'extremum')) {
+              const isMax = prevSlope > 0;
               features.push({
                 x: vx,
                 y: vy,
-                title: prevSlope > 0 ? 'Local Max' : 'Vertex / Min',
+                title: isMax ? 'Vertex (Local Max)' : 'Vertex (Local Min)',
+                meaning: isMax ? 'Maximum turning point' : 'Minimum turning point',
                 label: `(${formatNum(vx)}, ${formatNum(vy)})`,
                 type: 'extremum'
               });
@@ -175,7 +173,7 @@ export function findCurveFeatures(fn, xMin = -10, xMax = 10) {
     prevY = currY;
   }
 
-  return features.slice(0, 8);
+  return features.slice(0, 6);
 }
 
 function refineBisectionRoot(fn, a, b, iterations = 20) {
@@ -258,7 +256,7 @@ function exprToLatexPreview(labelStr) {
 }
 
 /**
- * Creates a refined HiDPI Desmos/GeoGebra-style interactive graphing widget DOM element
+ * Creates a refined HiDPI Interactive Graphing widget with a structured Key Features Table
  */
 export function createInteractiveGraphElement(graphSpec = {}) {
   const rawFunctions = Array.isArray(graphSpec.functions) && graphSpec.functions.length > 0
@@ -279,18 +277,18 @@ export function createInteractiveGraphElement(graphSpec = {}) {
   const defaultYDomain = [...yDomain];
 
   const LOGICAL_W = 600;
-  const LOGICAL_H = 300;
+  const LOGICAL_H = 280;
   const dpr = Math.min(2.5, Math.max(1, window.devicePixelRatio || 1));
 
   const wrapper = document.createElement('div');
   wrapper.className = 'desmos-graph-card';
 
-  // Refined Header Bar
+  // Header Bar
   const header = document.createElement('div');
   header.className = 'desmos-graph-header';
   header.innerHTML = `
     <div class="desmos-title-group">
-      <span class="desmos-badge">📈 INTERACTIVE GRAPH</span>
+      <span class="desmos-badge">📈 FUNCTION GRAPH</span>
       <span class="desmos-title"></span>
     </div>
     <div class="desmos-toolbar">
@@ -300,7 +298,7 @@ export function createInteractiveGraphElement(graphSpec = {}) {
     </div>
   `;
   header.querySelector('.desmos-title').textContent =
-    String(graphSpec.title || 'Coordinate Plane Explorer').replace(/\$/g, '');
+    String(graphSpec.title || 'Coordinate Plane').replace(/\$/g, '');
   wrapper.appendChild(header);
 
   // HiDPI Canvas Viewport
@@ -315,7 +313,6 @@ export function createInteractiveGraphElement(graphSpec = {}) {
   canvas.className = 'desmos-canvas';
   canvasWrap.appendChild(canvas);
 
-  // Floating Point Inspection Badge (only visible when hovering near a point/curve or click-tracing)
   const tooltip = document.createElement('div');
   tooltip.className = 'desmos-tooltip';
   tooltip.hidden = true;
@@ -323,12 +320,12 @@ export function createInteractiveGraphElement(graphSpec = {}) {
 
   wrapper.appendChild(canvasWrap);
 
-  // Key Feature Summary Strip (lists exact roots, vertex, y-intercept like GeoGebra/Desmos)
-  const featuresStrip = document.createElement('div');
-  featuresStrip.className = 'desmos-features-strip';
-  wrapper.appendChild(featuresStrip);
+  // Structured Key Features Table (Roots, Vertex, y-intercept) for high legibility
+  const tableContainer = document.createElement('div');
+  tableContainer.className = 'desmos-table-wrap';
+  wrapper.appendChild(tableContainer);
 
-  // Expression Bar (with KaTeX function badges + Add Function input)
+  // Expression Bar
   const exprBar = document.createElement('div');
   exprBar.className = 'desmos-expr-bar';
   wrapper.appendChild(exprBar);
@@ -336,7 +333,6 @@ export function createInteractiveGraphElement(graphSpec = {}) {
   let compiledCurves = [];
   let hoverMouse = null;
   let isPanning = false;
-  let isTraceMode = false; // Click-and-hold on a curve traces it smoothly; normal mouse move only highlights on close proximity
   let pinnedPoint = null;
   let dragStart = { x: 0, y: 0, xDomain: [0, 0], yDomain: [0, 0] };
 
@@ -351,12 +347,12 @@ export function createInteractiveGraphElement(graphSpec = {}) {
         autoFeatures
       };
     });
-    renderFeaturesStrip();
+    renderFeaturesTable();
     renderExpressionPills();
   }
 
-  function renderFeaturesStrip() {
-    featuresStrip.innerHTML = '';
+  function renderFeaturesTable() {
+    tableContainer.innerHTML = '';
     const allPts = [];
     compiledCurves.forEach((c) => {
       c.autoFeatures.forEach((pt) => {
@@ -365,17 +361,34 @@ export function createInteractiveGraphElement(graphSpec = {}) {
     });
 
     if (allPts.length === 0) {
-      featuresStrip.hidden = true;
+      tableContainer.hidden = true;
       return;
     }
-    featuresStrip.hidden = false;
+    tableContainer.hidden = false;
 
-    allPts.slice(0, 5).forEach((pt) => {
-      const chip = document.createElement('button');
-      chip.type = 'button';
-      chip.className = 'desmos-feature-chip';
-      chip.innerHTML = `<span class="desmos-feature-dot" style="background:${pt.color}"></span><strong>${pt.title}:</strong> ${pt.label}`;
-      chip.addEventListener('click', () => {
+    const table = document.createElement('table');
+    table.className = 'stem-info-table compact';
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Key Graph Feature</th>
+          <th>Coordinate (x, y)</th>
+          <th>Algebraic Condition</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    `;
+    const tbody = table.querySelector('tbody');
+
+    allPts.slice(0, 4).forEach((pt) => {
+      const tr = document.createElement('tr');
+      tr.className = 'clickable-row';
+      tr.innerHTML = `
+        <td><span class="desmos-feature-dot" style="background:${pt.color};display:inline-block;margin-right:6px;"></span><strong>${pt.title}</strong></td>
+        <td><code>${pt.label}</code></td>
+        <td>${pt.meaning || ''}</td>
+      `;
+      tr.addEventListener('click', () => {
         pinnedPoint = {
           wx: pt.x,
           wy: pt.y,
@@ -385,8 +398,10 @@ export function createInteractiveGraphElement(graphSpec = {}) {
         };
         drawGraph();
       });
-      featuresStrip.appendChild(chip);
+      tbody.appendChild(tr);
     });
+
+    tableContainer.appendChild(table);
   }
 
   function renderExpressionPills() {
@@ -478,10 +493,10 @@ export function createInteractiveGraphElement(graphSpec = {}) {
   }
 
   /**
-   * Finds a point only when the cursor is genuinely close in 2D Euclidean pixels (`< 12px`)
-   * to a special point or to the curve itself (unless the user clicked & held on the curve to trace).
+   * Inspects ONLY stationary key points when the cursor hovers directly over them (`< 12px`).
+   * Does NOT follow horizontal cursor movement across the curve.
    */
-  function findHoverOrTracePoint(mouseLogical) {
+  function findHoveredKeyPoint(mouseLogical) {
     if (!mouseLogical) return null;
 
     const allFeaturePoints = [];
@@ -499,9 +514,8 @@ export function createInteractiveGraphElement(graphSpec = {}) {
       }));
     });
 
-    // 1. Check 2D Euclidean proximity to key points (Roots, Vertex, Intercepts) within 13px
     let bestSpecial = null;
-    let bestSpecialDist = 13;
+    let bestSpecialDist = 12;
     for (const pt of allFeaturePoints) {
       const s = worldToScreen(pt.x, pt.y);
       const dist = Math.hypot(s.x - mouseLogical.x, s.y - mouseLogical.y);
@@ -513,47 +527,11 @@ export function createInteractiveGraphElement(graphSpec = {}) {
           sx: s.x,
           sy: s.y,
           label: pt.title ? `${pt.title}: (${formatNum(pt.x)}, ${formatNum(pt.y)})` : pt.label,
-          color: pt.color,
-          isKeyPoint: true
+          color: pt.color
         };
       }
     }
-    if (bestSpecial) return bestSpecial;
-
-    // 2. Check true 2D Euclidean distance to each curve in a small neighborhood around mouseLogical.x
-    // If not in click-trace mode, require the mouse cursor to be within 10px of the curve itself!
-    const maxCurveDist = isTraceMode ? 180 : 10;
-    let bestCurvePt = null;
-    let bestCurveDist = maxCurveDist;
-
-    compiledCurves.forEach((curve) => {
-      const searchSpanPx = isTraceMode ? 0 : 10;
-      const stepPx = 1;
-      for (let dx = -searchSpanPx; dx <= searchSpanPx; dx += stepPx) {
-        const testSx = mouseLogical.x + dx;
-        const { x: wx } = screenToWorld(testSx, 0);
-        const wy = curve.fn(wx);
-        if (!Number.isFinite(wy)) continue;
-        const s = worldToScreen(wx, wy);
-        const d = isTraceMode
-          ? Math.abs(s.y - mouseLogical.y)
-          : Math.hypot(s.x - mouseLogical.x, s.y - mouseLogical.y);
-        if (d < bestCurveDist) {
-          bestCurveDist = d;
-          bestCurvePt = {
-            wx,
-            wy,
-            sx: s.x,
-            sy: s.y,
-            label: `(${formatNum(wx)}, ${formatNum(wy)})`,
-            color: curve.color,
-            isKeyPoint: false
-          };
-        }
-      }
-    });
-
-    return bestCurvePt;
+    return bestSpecial;
   }
 
   function drawGraph() {
@@ -564,7 +542,7 @@ export function createInteractiveGraphElement(graphSpec = {}) {
     const W = LOGICAL_W;
     const H = LOGICAL_H;
 
-    // 1. Sleek Deep Slate Canvas Background
+    // 1. Clean Slate Canvas Background
     const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
     bgGrad.addColorStop(0, '#0b101b');
     bgGrad.addColorStop(1, '#0f172a');
@@ -576,9 +554,9 @@ export function createInteractiveGraphElement(graphSpec = {}) {
     const xMinor = xStep / 5;
     const yMinor = yStep / 5;
 
-    // 2. Minor Sub-Gridlines (Desmos-style subtle subdivision)
+    // 2. Minor Sub-Gridlines
     ctx.lineWidth = 0.6;
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.055)';
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.05)';
     const firstMinorX = Math.ceil(xDomain[0] / xMinor) * xMinor;
     for (let gx = firstMinorX; gx <= xDomain[1]; gx += xMinor) {
       const { x: sx } = worldToScreen(gx, 0);
@@ -616,7 +594,7 @@ export function createInteractiveGraphElement(graphSpec = {}) {
       ctx.stroke();
     }
 
-    // 4. Principal Coordinate Axes (x = 0, y = 0) with clean arrowheads
+    // 4. Principal Coordinate Axes (x = 0, y = 0)
     const origin = worldToScreen(0, 0);
     ctx.strokeStyle = 'rgba(226, 232, 240, 0.65)';
     ctx.lineWidth = 1.5;
@@ -634,7 +612,7 @@ export function createInteractiveGraphElement(graphSpec = {}) {
       ctx.stroke();
     }
 
-    // 5. Crisp Axis Tick Numbers with dark halo so curves never obscure numbers
+    // 5. Crisp Axis Tick Numbers
     ctx.font = '500 10.5px "Google Sans", Inter, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
@@ -679,17 +657,14 @@ export function createInteractiveGraphElement(graphSpec = {}) {
     compiledCurves.forEach((curve) => {
       ctx.save();
       ctx.strokeStyle = curve.color;
-      ctx.lineWidth = 2.6;
+      ctx.lineWidth = 2.5;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      ctx.shadowColor = curve.color;
-      ctx.shadowBlur = 4;
       ctx.beginPath();
 
       let penDown = false;
       let prevSy = null;
 
-      // Sub-pixel sampling (0.75px step) for silky smooth parabolas and trig waves
       for (let px = 0; px <= W; px += 0.75) {
         const { x: wx } = screenToWorld(px, 0);
         const wy = curve.fn(wx);
@@ -722,18 +697,16 @@ export function createInteractiveGraphElement(graphSpec = {}) {
       curve.autoFeatures.forEach(pt => allFeaturePoints.push({ ...pt, color: curve.color }));
     });
 
-    // 7. Draw Subtle Desmos-Style Key Points (Roots, Vertex, y-intercept)
+    // 7. Draw Stationary Key Points (Roots, Vertex, y-intercept) with clean static coordinate labels
     allFeaturePoints.forEach((pt) => {
       const { x: sx, y: sy } = worldToScreen(pt.x, pt.y);
-      if (sx < -8 || sx > W + 8 || sy < -8 || sy > H + 8) return;
+      if (sx < 10 || sx > W - 10 || sy < 10 || sy > H - 10) return;
 
-      // Outer halo
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.95)';
       ctx.beginPath();
       ctx.arc(sx, sy, 5.2, 0, Math.PI * 2);
       ctx.fill();
 
-      // Inner colored dot
       ctx.fillStyle = pt.color || '#38bdf8';
       ctx.beginPath();
       ctx.arc(sx, sy, 3.8, 0, Math.PI * 2);
@@ -742,34 +715,27 @@ export function createInteractiveGraphElement(graphSpec = {}) {
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 1.2;
       ctx.stroke();
+
+      // Static subtle coordinate label next to key points
+      const coordText = `(${formatNum(pt.x)}, ${formatNum(pt.y)})`;
+      ctx.font = '600 10px "Google Sans", Inter, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'bottom';
+      ctx.strokeStyle = 'rgba(11, 16, 27, 0.92)';
+      ctx.lineWidth = 3;
+      ctx.strokeText(coordText, sx + 7, sy - 4);
+      ctx.fillStyle = '#e2e8f0';
+      ctx.fillText(coordText, sx + 7, sy - 4);
     });
 
-    // 8. Active Point Highlight (ONLY when hovering directly on a point/curve or when a feature chip was clicked)
-    const activePt = findHoverOrTracePoint(hoverMouse) || (pinnedPoint ? {
+    // 8. Highlighted Key Point when hovered directly or selected from the Key Features Table
+    const activePt = findHoveredKeyPoint(hoverMouse) || (pinnedPoint ? {
       ...pinnedPoint,
       sx: worldToScreen(pinnedPoint.wx, pinnedPoint.wy).x,
       sy: worldToScreen(pinnedPoint.wx, pinnedPoint.wy).y
     } : null);
 
     if (activePt) {
-      // Subtle coordinate projection lines to the axes (only when actively inspecting a point)
-      ctx.save();
-      ctx.strokeStyle = 'rgba(226, 232, 240, 0.28)';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      if (origin.y >= 0 && origin.y <= H) {
-        ctx.moveTo(activePt.sx, activePt.sy);
-        ctx.lineTo(activePt.sx, origin.y);
-      }
-      if (origin.x >= 0 && origin.x <= W) {
-        ctx.moveTo(activePt.sx, activePt.sy);
-        ctx.lineTo(origin.x, activePt.sy);
-      }
-      ctx.stroke();
-      ctx.restore();
-
-      // Glowing outer ring around the inspected point
       ctx.save();
       ctx.fillStyle = activePt.color || '#38bdf8';
       ctx.beginPath();
@@ -831,35 +797,26 @@ export function createInteractiveGraphElement(graphSpec = {}) {
 
   canvas.addEventListener('mousedown', (e) => {
     const m = getLogicalMouseCoords(e);
-    hoverMouse = m;
-    const hitPoint = findHoverOrTracePoint(m);
-
-    // If the user clicks directly on a curve or key point, enter smooth curve-trace mode;
-    // otherwise pan the coordinate plane!
-    if (hitPoint) {
-      isTraceMode = true;
-      pinnedPoint = hitPoint;
+    const hitKeyPt = findHoveredKeyPoint(m);
+    if (hitKeyPt) {
+      pinnedPoint = hitKeyPt;
       drawGraph();
-    } else {
-      isPanning = true;
-      pinnedPoint = null;
-      dragStart = {
-        x: m.x,
-        y: m.y,
-        xDomain: [...xDomain],
-        yDomain: [...yDomain]
-      };
+      return;
     }
+    isPanning = true;
+    pinnedPoint = null;
+    dragStart = {
+      x: m.x,
+      y: m.y,
+      xDomain: [...xDomain],
+      yDomain: [...yDomain]
+    };
   });
 
   window.addEventListener('mouseup', () => {
     if (isPanning) {
       isPanning = false;
       rebuildCompiledCurves();
-      drawGraph();
-    }
-    if (isTraceMode) {
-      isTraceMode = false;
       drawGraph();
     }
   });
@@ -878,14 +835,13 @@ export function createInteractiveGraphElement(graphSpec = {}) {
     }
 
     hoverMouse = m;
-    const nearPt = findHoverOrTracePoint(m);
-    canvas.style.cursor = isPanning ? 'grabbing' : nearPt ? 'pointer' : 'grab';
+    const nearKeyPt = findHoveredKeyPoint(m);
+    canvas.style.cursor = isPanning ? 'grabbing' : nearKeyPt ? 'pointer' : 'grab';
     drawGraph();
   });
 
   canvas.addEventListener('mouseleave', () => {
     hoverMouse = null;
-    isTraceMode = false;
     drawGraph();
   });
 

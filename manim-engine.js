@@ -1,11 +1,14 @@
 /**
- * Manim Formal Step-by-Step Solution Video Engine (`manim-engine.js`)
- * Renders a 3Blue1Brown / Manim-style multi-scene formal mathematical solution & conceptual lesson
- * inside a chat `<canvas>` element + cumulative KaTeX derivation board, synchronized with the active
- * Gemini Neural Voice model (`/api/tts`).
+ * Step-by-Step Visual Solution Video Engine (`manim-engine.js`)
+ * Key Design Principles:
+ *  1. Dedicated Single-Step Screen: Each step (Step 1, Step 2, ...) displays its own clean, concise slide with zero scrollbars.
+ *  2. Strictly Decoupled Visuals vs. Voice: The spoken narration script is NEVER displayed on the video screen;
+ *     the screen shows only the crucial equation, a structured comparison/summary table, and a clean coordinate graph.
+ *  3. Stationary Graph Highlights: Important points on the graph are highlighted statically with zero moving dots or distracting motion.
+ *  4. User-Focused Presentation: No technical engine jargon in the UI.
  */
 
-import { compileMathExpression } from './graph-engine.js';
+import { compileMathExpression, findCurveFeatures } from './graph-engine.js';
 import { sanitizeLatexForHud } from './svs-engine.js';
 
 export function createManimVideoElement(storyboard = {}, options = {}) {
@@ -14,70 +17,89 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
   const apiKey = options.apiKey || '';
   const onPlaybackStateChange = options.onPlaybackStateChange || (() => {});
 
-  const title = String(storyboard.title || 'Formal Step-by-Step Mathematical Solution').replace(/\$/g, '');
-  const course = String(storyboard.course || 'Ontario Secondary STEM — Formal Solution').replace(/\$/g, '');
+  const title = String(storyboard.title || 'Step-by-Step Solution').replace(/\$/g, '');
+  const course = String(storyboard.course || 'Ontario Secondary STEM').replace(/\$/g, '');
   const scenes = Array.isArray(storyboard.scenes) && storyboard.scenes.length > 0
     ? storyboard.scenes
     : [
         {
-          heading: 'Step 1: Formal Problem Statement & Standard Form',
-          conceptTag: 'Standard Quadratic Form: ax² + bx + c = 0',
-          latex: '2x^2 + 5x + 2 = 0 \\quad (a = 2,\\; b = 5,\\; c = 2)',
-          annotation: 'Identify coefficients: leading coefficient a = 2, linear coefficient b = 5, constant term c = 2.',
-          narration: 'We begin by stating the quadratic equation in standard form, two x squared plus five x plus two equals zero. Here, the leading coefficient a is two, the middle coefficient b is five, and the constant term c is two.',
+          heading: 'Step 1: Standard Form & Coefficients',
+          conceptTag: 'Quadratic Form: ax² + bx + c = 0',
+          latex: '2x^2 + 5x + 2 = 0',
+          table: {
+            headers: ['Coefficient', 'Value', 'Role in Equation'],
+            rows: [
+              ['a', '2', 'Leading (x² term)'],
+              ['b', '5', 'Linear (x term)'],
+              ['c', '2', 'Constant intercept']
+            ]
+          },
+          narration: 'We begin by writing the quadratic equation in standard form, two x squared plus five x plus two equals zero. As shown in the table, the leading coefficient a is two, the linear coefficient b is five, and the constant c is two.',
           graphExpr: '2*x^2 + 5*x + 2',
           highlightPoint: [0, 2]
         },
         {
-          heading: 'Step 2: Governing Concept — The ac-Decomposition Theorem',
-          conceptTag: 'Find integers p, q such that p·q = a·c and p + q = b',
-          latex: 'p \\cdot q = 2 \\times 2 = 4, \\quad p + q = 5 \\implies p = 4,\\; q = 1',
-          annotation: 'Multiply a·c = 4. The unique pair of factors of 4 that sum to 5 is 4 and 1.',
-          narration: 'To factor a non-monic quadratic by decomposition, we multiply the leading coefficient a by the constant c to get four. We then find two numbers that multiply to positive four and add to positive five, which are four and one.',
+          heading: 'Step 2: Product-Sum Decomposition',
+          conceptTag: 'Find p, q where p · q = a · c and p + q = b',
+          latex: 'p \\cdot q = 4, \\quad p + q = 5 \\implies p = 4,\\; q = 1',
+          table: {
+            headers: ['Candidate Pair (p, q)', 'Product (p · q)', 'Sum (p + q)'],
+            rows: [
+              ['1 and 4', '4 ✓', '5 ✓ (Match)'],
+              ['2 and 2', '4 ✓', '4 ✗']
+            ]
+          },
+          narration: 'To factor by decomposition, we multiply a times c, which gives four. Testing factor pairs of four in our table, four and one multiply to four and add to five.',
           graphExpr: '2*x^2 + 5*x + 2',
           highlightPoint: [-1.25, -1.125]
         },
         {
-          heading: 'Step 3: Splitting the Middle Term & Factoring by Grouping',
-          conceptTag: 'Distributive Law & Common Monomial Factoring',
-          latex: '2x^2 + 4x + 1x + 2 = 0 \\implies 2x(x + 2) + 1(x + 2) = 0',
-          annotation: 'Rewrite 5x as 4x + x, then factor 2x from the first pair and 1 from the second pair.',
-          narration: 'Next, we split the middle term five x into four x plus one x. Grouping the first two terms and the last two terms lets us factor out two x from the first pair and one from the second pair, revealing the shared binomial factor x plus two.',
+          heading: 'Step 3: Factoring by Grouping',
+          conceptTag: 'Split 5x into 4x + 1x and group pairs',
+          latex: '2x^2 + 4x + x + 2 = 0 \\implies 2x(x + 2) + 1(x + 2) = 0',
+          annotation: 'Common binomial factor (x + 2) extracted from both groups.',
+          narration: 'Next, we split the middle term five x into four x plus one x. Factoring two x from the first pair and one from the second pair reveals the shared binomial factor x plus two.',
           graphExpr: '2*x^2 + 5*x + 2',
           highlightPoint: [-2, 0]
         },
         {
-          heading: 'Step 4: Zero-Product Property & Exact Roots',
-          conceptTag: 'Zero-Product Property: A · B = 0 ⟺ A = 0 or B = 0',
-          latex: '(2x + 1)(x + 2) = 0 \\implies x_1 = -\\frac{1}{2}, \\quad x_2 = -2',
-          annotation: 'Set each linear factor to zero: 2x + 1 = 0 gives x = -1/2, and x + 2 = 0 gives x = -2.',
-          narration: 'Factoring out x plus two yields the complete factored form: two x plus one, times x plus two, equals zero. By the Zero-Product Property, setting each factor to zero gives our two exact roots: x equals negative one half, and x equals negative two.',
+          heading: 'Step 4: Zero-Product Property & Verified Roots',
+          conceptTag: 'Set each linear factor to zero',
+          latex: '(2x + 1)(x + 2) = 0 \\implies x = -0.5, \\quad x = -2',
+          table: {
+            headers: ['Factor Equation', 'Solved Root', 'Graph Intercept'],
+            rows: [
+              ['2x + 1 = 0', 'x = -0.5', '(-0.5, 0)'],
+              ['x + 2 = 0', 'x = -2', '(-2, 0)']
+            ]
+          },
+          narration: 'Finally, setting each factor to zero gives our two exact solutions: x equals negative zero point five, and x equals negative two, which match the two horizontal intercepts on the graph.',
           graphExpr: '2*x^2 + 5*x + 2',
           highlightPoint: [-0.5, 0]
         }
       ];
 
   const LOGICAL_W = 660;
-  const LOGICAL_H = 380;
+  const LOGICAL_H = 310;
   const dpr = Math.min(2.5, Math.max(1, window.devicePixelRatio || 1));
 
   const card = document.createElement('div');
   card.className = 'manim-video-card';
 
-  // Header
+  // Clean User-Focused Header (No technology jargon)
   const header = document.createElement('div');
   header.className = 'manim-video-header';
   header.innerHTML = `
     <div class="manim-badge-group">
-      <span class="manim-engine-badge">🎬 MANIM FORMAL SOLUTION</span>
+      <span class="manim-engine-badge">🎬 STEP-BY-STEP SOLUTION</span>
       <strong class="manim-video-title"></strong>
     </div>
-    <span class="manim-voice-tag">Narrator: ${voiceName} (${course})</span>
+    <span class="manim-voice-tag">${course} • Voice: ${voiceName}</span>
   `;
   header.querySelector('.manim-video-title').textContent = title;
   card.appendChild(header);
 
-  // Stage container with HiDPI <canvas> + Cumulative Step-by-Step KaTeX Derivation Overlay
+  // Stage container: Dedicated Single-Step Slide Screen (No Scrollbars!)
   const stage = document.createElement('div');
   stage.className = 'manim-stage';
 
@@ -89,10 +111,10 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
   canvas.className = 'manim-canvas';
   stage.appendChild(canvas);
 
-  // Cumulative Step-by-Step Formal Derivation Stack Overlay (Left/Main Board)
-  const derivationOverlay = document.createElement('div');
-  derivationOverlay.className = 'manim-derivation-ledger';
-  stage.appendChild(derivationOverlay);
+  // Single-Step Concise Visual Content Overlay (Left Side: Equation + Table/Key Cue)
+  const slideContentOverlay = document.createElement('div');
+  slideContentOverlay.className = 'manim-slide-content';
+  stage.appendChild(slideContentOverlay);
 
   card.appendChild(stage);
 
@@ -102,10 +124,10 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
   controls.innerHTML = `
     <div class="manim-left-ctrls">
       <button type="button" class="manim-ctrl-btn primary" data-action="play-pause">⏸ Pause</button>
-      <button type="button" class="manim-ctrl-btn" data-action="replay">↺ Replay Full Solution</button>
+      <button type="button" class="manim-ctrl-btn" data-action="replay">↺ Replay</button>
     </div>
     <div class="manim-scene-dots"></div>
-    <span class="manim-status-tag">Synthesizing voiceover...</span>
+    <span class="manim-status-tag">Loading voice...</span>
   `;
   card.appendChild(controls);
 
@@ -118,12 +140,12 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
   let isPlaying = true;
   let isDestroyed = false;
   let sceneStartTimestamp = performance.now();
-  let sceneDurationMs = 8000;
+  let sceneDurationMs = 7500;
   let currentAudio = null;
   const audioCache = new Map();
   let fallbackTimer = null;
 
-  // Render clickable step pills
+  // Render clickable step screen buttons
   scenes.forEach((_sc, idx) => {
     const dot = document.createElement('button');
     dot.type = 'button';
@@ -142,54 +164,78 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
   }
 
   /**
-   * Renders the cumulative formal derivation ledger up to `currentSceneIdx`
-   * so the student sees the full solution building step-by-step on the Manim board!
+   * Renders ONLY the single active step's concise visual cues (Equation + Table or Key Rule).
+   * Never renders the voiceover script and never overflows with a scrollbar.
    */
-  function renderDerivationLedger(upToIdx) {
-    derivationOverlay.innerHTML = '';
+  function renderStepSlideContent(sceneIdx) {
+    slideContentOverlay.innerHTML = '';
+    const sc = scenes[sceneIdx] || scenes[0];
+    if (!sc) return;
 
-    // Show up to 3 most recent steps (previous completed steps + active highlighted step)
-    const startIdx = Math.max(0, upToIdx - 2);
-    for (let i = startIdx; i <= upToIdx; i++) {
-      const sc = scenes[i];
-      if (!sc) continue;
-      const isCurrent = i === upToIdx;
+    // 1. Concise Concept / Rule Pill
+    if (sc.conceptTag) {
+      const rulePill = document.createElement('div');
+      rulePill.className = 'manim-rule-pill';
+      rulePill.textContent = String(sc.conceptTag).replace(/\$/g, '');
+      slideContentOverlay.appendChild(rulePill);
+    }
 
-      const stepRow = document.createElement('div');
-      stepRow.className = `manim-ledger-step ${isCurrent ? 'active-step' : 'completed-step'}`;
-
-      const stepHeader = document.createElement('div');
-      stepHeader.className = 'manim-ledger-step-hdr';
-      stepHeader.textContent = isCurrent
-        ? `▶ ${sc.conceptTag || sc.heading || `Step ${i + 1}`}`
-        : `✓ Step ${i + 1}: ${sc.conceptTag || sc.heading || ''}`;
-      stepRow.appendChild(stepHeader);
-
-      const mathBox = document.createElement('div');
-      mathBox.className = 'manim-ledger-math';
-      const cleanLatex = sanitizeLatexForHud(sc.latex || '');
-      if (window.katex && cleanLatex) {
-        try {
-          window.katex.render(cleanLatex, mathBox, {
-            displayMode: false,
-            throwOnError: false
-          });
-        } catch (_) {
-          mathBox.textContent = cleanLatex;
-        }
-      } else {
-        mathBox.textContent = cleanLatex;
+    // 2. Primary Mathematical Equation Box (KaTeX)
+    const mathCard = document.createElement('div');
+    mathCard.className = 'manim-slide-math-card';
+    const cleanLatex = sanitizeLatexForHud(sc.latex || '');
+    if (window.katex && cleanLatex) {
+      try {
+        window.katex.render(cleanLatex, mathCard, {
+          displayMode: false,
+          throwOnError: false
+        });
+      } catch (_) {
+        mathCard.textContent = cleanLatex;
       }
-      stepRow.appendChild(mathBox);
+    } else {
+      mathCard.textContent = cleanLatex;
+    }
+    slideContentOverlay.appendChild(mathCard);
 
-      if (isCurrent && sc.annotation) {
-        const note = document.createElement('div');
-        note.className = 'manim-ledger-note';
-        note.textContent = String(sc.annotation).replace(/\$/g, '');
-        stepRow.appendChild(note);
-      }
+    // 3. Structured Table (if provided for this step) OR concise 1-line Key Takeaway
+    if (
+      sc.table &&
+      Array.isArray(sc.table.headers) &&
+      Array.isArray(sc.table.rows) &&
+      sc.table.rows.length > 0
+    ) {
+      const tableEl = document.createElement('table');
+      tableEl.className = 'stem-info-table video-slide-table';
 
-      derivationOverlay.appendChild(stepRow);
+      const thead = document.createElement('thead');
+      const hRow = document.createElement('tr');
+      sc.table.headers.slice(0, 4).forEach((hText) => {
+        const th = document.createElement('th');
+        th.textContent = String(hText).replace(/\$/g, '');
+        hRow.appendChild(th);
+      });
+      thead.appendChild(hRow);
+      tableEl.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      sc.table.rows.slice(0, 3).forEach((rowArr) => {
+        if (!Array.isArray(rowArr)) return;
+        const tr = document.createElement('tr');
+        rowArr.slice(0, 4).forEach((cellVal) => {
+          const td = document.createElement('td');
+          td.textContent = String(cellVal).replace(/\$/g, '');
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      tableEl.appendChild(tbody);
+      slideContentOverlay.appendChild(tableEl);
+    } else if (sc.annotation) {
+      const keyCue = document.createElement('div');
+      keyCue.className = 'manim-slide-key-cue';
+      keyCue.textContent = String(sc.annotation).replace(/\$/g, '');
+      slideContentOverlay.appendChild(keyCue);
     }
   }
 
@@ -240,14 +286,13 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     btnPlayPause.textContent = '⏸ Pause';
     updateSceneDots();
 
-    renderDerivationLedger(currentSceneIdx);
+    renderStepSlideContent(currentSceneIdx);
     sceneStartTimestamp = performance.now();
-    sceneDurationMs = 8500;
+    sceneDurationMs = 8000;
 
     onPlaybackStateChange(true);
-    statusLabel.textContent = `Step ${currentSceneIdx + 1} of ${scenes.length} • Synthesizing voice...`;
+    statusLabel.textContent = `Step ${currentSceneIdx + 1} of ${scenes.length} • Loading voice...`;
 
-    // Pre-fetch next scene audio in parallel so step transitions have zero lag
     if (currentSceneIdx + 1 < scenes.length) {
       fetchSceneAudioBlob(currentSceneIdx + 1);
     }
@@ -262,13 +307,13 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
 
       audio.onloadedmetadata = () => {
         if (audio.duration && Number.isFinite(audio.duration)) {
-          sceneDurationMs = Math.max(4500, (audio.duration / audio.playbackRate) * 1000 + 650);
+          sceneDurationMs = Math.max(4500, (audio.duration / audio.playbackRate) * 1000 + 500);
         }
       };
 
       audio.onplay = () => {
         sceneStartTimestamp = performance.now();
-        statusLabel.textContent = `Step ${currentSceneIdx + 1} of ${scenes.length} • Narrating`;
+        statusLabel.textContent = `Step ${currentSceneIdx + 1} of ${scenes.length} • Playing`;
       };
 
       audio.onended = () => {
@@ -276,18 +321,18 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
       };
 
       audio.onerror = () => {
-        fallbackTimer = setTimeout(() => advanceToNextScene(), 6500);
+        fallbackTimer = setTimeout(() => advanceToNextScene(), 6000);
       };
 
       try {
         await audio.play();
       } catch (_) {
         statusLabel.textContent = `Step ${currentSceneIdx + 1} of ${scenes.length}`;
-        fallbackTimer = setTimeout(() => advanceToNextScene(), 6500);
+        fallbackTimer = setTimeout(() => advanceToNextScene(), 6000);
       }
     } else {
       statusLabel.textContent = `Step ${currentSceneIdx + 1} of ${scenes.length}`;
-      fallbackTimer = setTimeout(() => advanceToNextScene(), 7000);
+      fallbackTimer = setTimeout(() => advanceToNextScene(), 6500);
     }
   }
 
@@ -298,7 +343,7 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     } else {
       isPlaying = false;
       btnPlayPause.textContent = '▶ Play';
-      statusLabel.textContent = 'Full Solution Complete • Click Replay to watch again';
+      statusLabel.textContent = 'Solution Complete • Click Replay to watch again';
       onPlaybackStateChange(false);
     }
   }
@@ -323,8 +368,8 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     playScene(0);
   });
 
-  // 60fps HiDPI Manim Canvas Animation Loop
-  function renderManimFrame() {
+  // HiDPI Frame Renderer (Clean, Stationary Key Points, Zero Spoken Script Clutter)
+  function renderSlideFrame() {
     if (isDestroyed) return;
 
     const ctx = canvas.getContext('2d');
@@ -337,74 +382,68 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
 
     const elapsed = performance.now() - sceneStartTimestamp;
     const progress = Math.min(1, Math.max(0, elapsed / sceneDurationMs));
-    const introAlpha = Math.min(1, elapsed / 400);
+    const introAlpha = Math.min(1, elapsed / 300);
 
-    // 1. Deep Manim Slate Backdrop
+    // 1. Clean Dark Presentation Backdrop
     const bgGrad = ctx.createLinearGradient(0, 0, W, H);
-    bgGrad.addColorStop(0, '#070b14');
-    bgGrad.addColorStop(1, '#0d1526');
+    bgGrad.addColorStop(0, '#090e1a');
+    bgGrad.addColorStop(1, '#0f172a');
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, W, H);
 
-    // 2. Subtle 3Blue1Brown NumberPlane Background Grid
-    ctx.lineWidth = 0.8;
-    ctx.strokeStyle = 'rgba(56, 189, 248, 0.08)';
-    const gridSpacing = 30;
-    for (let x = 0; x <= W; x += gridSpacing) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, H);
-      ctx.stroke();
-    }
-    for (let y = 0; y <= H; y += gridSpacing) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(W, y);
-      ctx.stroke();
-    }
-
-    // 3. Top Scene Heading Banner (Manim Write animation)
+    // 2. Top Step Screen Header Bar
     ctx.save();
     ctx.globalAlpha = introAlpha;
-    ctx.fillStyle = '#38bdf8';
-    ctx.font = '600 14px "Google Sans", Inter, sans-serif';
-    const headingText = String(scene.heading || `Step ${currentSceneIdx + 1}`).replace(/\$/g, '');
-    ctx.fillText(headingText, 20, 26);
 
-    const lineW = Math.min(W - 40, 340 * Math.min(1, elapsed / 550));
-    ctx.strokeStyle = '#facc15';
-    ctx.lineWidth = 2;
+    // Step Number Pill
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.16)';
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.5)';
+    ctx.lineWidth = 1;
+    ctx.fillRect(18, 14, 84, 22);
+    ctx.strokeRect(18, 14, 84, 22);
+
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = '700 10.5px "Google Sans", Inter, sans-serif';
+    ctx.fillText(`STEP ${currentSceneIdx + 1} OF ${scenes.length}`, 27, 29);
+
+    // Concise Step Heading
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = '600 14px "Google Sans", Inter, sans-serif';
+    const rawHeading = String(scene.heading || `Step ${currentSceneIdx + 1}`).replace(/^Step\s+\d+\s*:\s*/i, '').replace(/\$/g, '');
+    ctx.fillText(rawHeading, 112, 29);
+
+    // Subtle divider line
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.2)';
     ctx.beginPath();
-    ctx.moveTo(20, 33);
-    ctx.lineTo(20 + lineW, 33);
+    ctx.moveTo(18, 44);
+    ctx.lineTo(W - 18, 44);
     ctx.stroke();
     ctx.restore();
 
-    // Determine whether we have a graph expression to show on the right half
     const graphExprStr = String(scene.graphExpr || storyboard.scenes?.[0]?.graphExpr || '').trim();
     const hasGraph = Boolean(graphExprStr);
 
-    // Position the cumulative derivation ledger DOM overlay
-    derivationOverlay.style.left = '18px';
-    derivationOverlay.style.top = '42px';
-    derivationOverlay.style.width = hasGraph ? '380px' : `${W - 36}px`;
-    derivationOverlay.style.height = '240px';
+    // Position the single-step content overlay (Left side if graph is shown, otherwise full width)
+    slideContentOverlay.style.left = '18px';
+    slideContentOverlay.style.top = '54px';
+    slideContentOverlay.style.width = hasGraph ? '382px' : `${W - 36}px`;
+    slideContentOverlay.style.height = `${H - 68}px`;
+    slideContentOverlay.style.opacity = String(introAlpha);
 
-    // 4. Right-Side Manim Coordinate Plane (`NumberPlane` + `FunctionGraph` + `FocusOn` point)
+    // 3. Right-Side Coordinate Graph Panel (Stationary Key Points ONLY — No Moving Dots!)
     if (hasGraph) {
-      const gx0 = 410;
-      const gy0 = 42;
-      const gw = W - gx0 - 16;
-      const gh = 236;
+      const gx0 = 414;
+      const gy0 = 54;
+      const gw = W - gx0 - 18;
+      const gh = H - 70;
 
       ctx.save();
-      ctx.fillStyle = 'rgba(10, 16, 29, 0.94)';
-      ctx.strokeStyle = 'rgba(56, 189, 248, 0.42)';
-      ctx.lineWidth = 1.3;
+      ctx.fillStyle = 'rgba(11, 17, 30, 0.95)';
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.3)';
+      ctx.lineWidth = 1.2;
       ctx.fillRect(gx0, gy0, gw, gh);
       ctx.strokeRect(gx0, gy0, gw, gh);
 
-      // Coordinate domain
       const xMin = Array.isArray(storyboard.xDomain) ? Number(storyboard.xDomain[0]) : -5;
       const xMax = Array.isArray(storyboard.xDomain) ? Number(storyboard.xDomain[1]) : 5;
       const yMin = Array.isArray(storyboard.yDomain) ? Number(storyboard.yDomain[0]) : -5;
@@ -413,8 +452,8 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
       const toScreenX = wx => gx0 + ((wx - xMin) / (xMax - xMin)) * gw;
       const toScreenY = wy => gy0 + gh - ((wy - yMin) / (yMax - yMin)) * gh;
 
-      // Internal mini-grid
-      ctx.strokeStyle = 'rgba(148, 163, 184, 0.12)';
+      // Subtle coordinate grid
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.11)';
       ctx.lineWidth = 0.8;
       for (let wx = Math.ceil(xMin); wx <= Math.floor(xMax); wx++) {
         const sx = toScreenX(wx);
@@ -435,7 +474,7 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
       const ox = toScreenX(0);
       const oy = toScreenY(0);
       ctx.strokeStyle = 'rgba(226, 232, 240, 0.55)';
-      ctx.lineWidth = 1.3;
+      ctx.lineWidth = 1.2;
       if (ox >= gx0 && ox <= gx0 + gw) {
         ctx.beginPath();
         ctx.moveTo(ox, gy0);
@@ -449,20 +488,18 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
         ctx.stroke();
       }
 
-      // Animated curve sweep
+      // Function Curve
       const fn = compileMathExpression(graphExprStr);
-      const sweepMaxPx = Math.floor(gw * Math.min(1, elapsed / 1200));
-
       ctx.strokeStyle = '#38bdf8';
-      ctx.lineWidth = 2.4;
+      ctx.lineWidth = 2.3;
       ctx.beginPath();
       let pen = false;
-      for (let px = 0; px <= sweepMaxPx; px += 1.5) {
+      for (let px = 0; px <= gw; px += 1) {
         const wx = xMin + (px / gw) * (xMax - xMin);
         const wy = fn(wx);
         if (Number.isFinite(wy)) {
           const sy = toScreenY(wy);
-          if (sy >= gy0 + 3 && sy <= gy0 + gh - 3) {
+          if (sy >= gy0 + 2 && sy <= gy0 + gh - 2) {
             if (!pen) {
               ctx.moveTo(gx0 + px, sy);
               pen = true;
@@ -478,68 +515,62 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
       }
       ctx.stroke();
 
-      // Highlight specific mathematical point (`highlightPoint: [x, y]`) or animate tracker dot
-      let targetWx = null;
-      let targetWy = null;
-      if (Array.isArray(scene.highlightPoint) && scene.highlightPoint.length === 2) {
-        targetWx = Number(scene.highlightPoint[0]);
-        targetWy = Number(scene.highlightPoint[1]);
-      } else {
-        const trackerT = (Math.sin(elapsed * 0.002) + 1) * 0.5;
-        targetWx = xMin + trackerT * (xMax - xMin);
-        targetWy = fn(targetWx);
-      }
-
-      if (Number.isFinite(targetWx) && Number.isFinite(targetWy)) {
-        const tsx = toScreenX(targetWx);
-        const tsy = toScreenY(targetWy);
-        if (tsx >= gx0 + 4 && tsx <= gx0 + gw - 4 && tsy >= gy0 + 4 && tsy <= gy0 + gh - 4) {
-          // Pulsing Manim FocusOn ring
-          const pulseRadius = 7 + 3 * Math.sin(elapsed * 0.006);
-          ctx.strokeStyle = 'rgba(250, 204, 21, 0.75)';
-          ctx.lineWidth = 1.5;
+      // Stationary Key Points (Roots, Vertex, y-intercept, plus Step's highlightPoint)
+      const autoPts = findCurveFeatures(fn, xMin, xMax);
+      autoPts.forEach((pt) => {
+        const sx = toScreenX(pt.x);
+        const sy = toScreenY(pt.y);
+        if (sx >= gx0 + 6 && sx <= gx0 + gw - 6 && sy >= gy0 + 6 && sy <= gy0 + gh - 6) {
+          ctx.fillStyle = '#64748b';
           ctx.beginPath();
-          ctx.arc(tsx, tsy, pulseRadius, 0, Math.PI * 2);
-          ctx.stroke();
-
-          ctx.fillStyle = '#facc15';
-          ctx.beginPath();
-          ctx.arc(tsx, tsy, 4.2, 0, Math.PI * 2);
+          ctx.arc(sx, sy, 3.2, 0, Math.PI * 2);
           ctx.fill();
+        }
+      });
 
-          const ptLabel = `(${Math.round(targetWx * 100) / 100}, ${Math.round(targetWy * 100) / 100})`;
-          ctx.fillStyle = '#fef08a';
-          ctx.font = '600 10.5px "Google Sans", Inter, sans-serif';
-          ctx.fillText(ptLabel, Math.min(gx0 + gw - 62, Math.max(gx0 + 6, tsx + 8)), Math.max(gy0 + 14, tsy - 7));
+      // Highlight ONLY the stationary point relevant to this step (no moving dot or pulsing ring)
+      if (Array.isArray(scene.highlightPoint) && scene.highlightPoint.length === 2) {
+        const hWx = Number(scene.highlightPoint[0]);
+        const hWy = Number(scene.highlightPoint[1]);
+        if (Number.isFinite(hWx) && Number.isFinite(hWy)) {
+          const tsx = toScreenX(hWx);
+          const tsy = toScreenY(hWy);
+          if (tsx >= gx0 + 4 && tsx <= gx0 + gw - 4 && tsy >= gy0 + 4 && tsy <= gy0 + gh - 4) {
+            ctx.fillStyle = '#facc15';
+            ctx.beginPath();
+            ctx.arc(tsx, tsy, 4.8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            const ptLabel = `(${Math.round(hWx * 100) / 100}, ${Math.round(hWy * 100) / 100})`;
+            ctx.fillStyle = '#fef08a';
+            ctx.font = '600 10.5px "Google Sans", Inter, sans-serif';
+            ctx.fillText(
+              ptLabel,
+              Math.min(gx0 + gw - 64, Math.max(gx0 + 6, tsx + 8)),
+              Math.max(gy0 + 14, tsy - 6)
+            );
+          }
         }
       }
 
       ctx.restore();
     }
 
-    // 5. Bottom Instructor Voiceover Subtitle Box
-    ctx.fillStyle = 'rgba(10, 15, 26, 0.94)';
-    ctx.fillRect(16, H - 84, W - 32, 68);
-    ctx.strokeStyle = 'rgba(56, 189, 248, 0.28)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(16, H - 84, W - 32, 68);
-
-    ctx.fillStyle = '#f8fafc';
-    ctx.font = '12px "Google Sans", Inter, sans-serif';
-    wrapCanvasText(ctx, String(scene.narration || '').replace(/\$/g, ''), 26, H - 64, W - 52, 16.5);
-
-    // 6. Bottom Timeline Progress Bar
+    // 4. Bottom Step Progress Indicator Bar
     const totalProgress = (currentSceneIdx + progress) / scenes.length;
-    ctx.fillStyle = 'rgba(56, 189, 248, 0.18)';
-    ctx.fillRect(0, H - 5, W, 5);
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.16)';
+    ctx.fillRect(0, H - 4, W, 4);
     ctx.fillStyle = '#38bdf8';
-    ctx.fillRect(0, H - 5, W * totalProgress, 5);
+    ctx.fillRect(0, H - 4, W * totalProgress, 4);
 
     ctx.restore();
-    requestAnimationFrame(renderManimFrame);
+    requestAnimationFrame(renderSlideFrame);
   }
 
-  requestAnimationFrame(renderManimFrame);
+  requestAnimationFrame(renderSlideFrame);
   playScene(0);
 
   const controller = {
@@ -552,29 +583,9 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     playScene
   };
 
-  // Attach controller directly onto `card` as well as returning `{ element: card, controller }`
   card.controller = controller;
   return {
     element: card,
     controller
   };
-}
-
-function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight) {
-  const words = text.split(' ');
-  let line = '';
-  let currY = y;
-
-  for (let n = 0; n < words.length; n++) {
-    const testLine = line + words[n] + ' ';
-    const metrics = ctx.measureText(testLine);
-    if (metrics.width > maxWidth && n > 0) {
-      ctx.fillText(line.trim(), x, currY);
-      line = words[n] + ' ';
-      currY += lineHeight;
-    } else {
-      line = testLine;
-    }
-  }
-  ctx.fillText(line.trim(), x, currY);
 }

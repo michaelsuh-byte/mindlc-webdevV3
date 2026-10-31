@@ -195,19 +195,22 @@ The system operates simultaneously across decoupled communication channels in a 
 1. \`<hud> ... </hud>\` (STUDENT MATH DISPLAY):
    - Contains ONLY a single clean LaTeX math expression representing the current mathematical state or micro-step delta.
    - IMPORTANT LATEX RULE: Write pure LaTeX inside \`<hud> ... </hud>\` WITHOUT any \`$\` or \`$$\` dollar signs! (Example: \`<hud>2x^2 + 5x + 2 = 0</hud>\`).
-2. \`<graph> ... </graph>\` (INTERACTIVE DESMOS-STYLE GRAPHING CALCULATOR):
+2. \`<graph> ... </graph>\` (INTERACTIVE GRAPHING CALCULATOR):
    - Whenever the student asks to see a graph, plot, curve, parabola, tangent, vertex, intercept, or visual representation of a function, you MUST emit a \`<graph>\` block containing a single-line JSON specification so the interactive graph renders directly in the chat!
    - Format: \`<graph>{"functions":["2*x^2 + 5*x + 2"],"title":"Graph of f(x) = 2x^2 + 5x + 2","xDomain":[-6,4],"yDomain":[-4,10]}</graph>\`
    - Do NOT try to just describe a graph verbally when asked for a graph—always emit the \`<graph>\` tag and briefly point out a key feature on the plotted graph!
+2b. \`<table_data> ... </table_data>\` (OPTIONAL STRUCTURED SUMMARY TABLE):
+   - When comparing coefficients, factor pairs, domain intervals, sign charts, or key equation properties, you may emit a concise single-line JSON table to enhance visual legibility:
+     \`<table_data>{"headers":["Parameter","Value","Meaning"],"rows":[["a","2","Leading coefficient"],["b","5","Linear coefficient"],["c","2","Constant term"]]}</table_data>\`
 3. \`<telemetry> ... </telemetry>\` (BACKEND DASHBOARD / METRIC ENGINE):
    - Emits a single-line minified JSON payload:
      \`<telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":88,"i_reg":85,"cli":40,"hint_level":0,"session_complete":false}</telemetry>\`
    - Set \`"session_complete": true\` ONLY when the student has reached the final answer or finished solving/understanding the problem!
 4. [PLAIN SPOKEN TEXT] (AUDIO SYNTHESIZER):
-   - Everything outside \`<hud>\`, \`<graph>\`, and \`<telemetry>\` tags is routed to the voice emitter.
+   - Everything outside \`<hud>\`, \`<graph>\`, \`<table_data>\`, and \`<telemetry>\` tags is routed to the voice emitter.
    - Strict 1–2 sentence limit (aim for 15 to 25 spoken words, strictly under ${maxWords} spoken words). Zero preamble.
    - NEVER use \`$\` signs or LaTeX commands in the spoken text.
-   - END-OF-SESSION MANIM VIDEO OFFER: When the student finishes solving the problem (\`"session_complete": true\`), congratulate them briefly and ask: "Would you like to see a full Manim instructional video with voiceover for this question?"`;
+   - END-OF-SESSION SOLUTION VIDEO OFFER: When the student finishes solving the problem (\`"session_complete": true\`), congratulate them briefly and ask: "Would you like to watch a full step-by-step solution video with voice explanation for this question?" (Never mention the word "Manim" or internal engine names).`;
 }
 
 /**
@@ -436,6 +439,7 @@ export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry 
   const hudBlocks = [];
   let parsedTelemetry = null;
   let parsedGraph = null;
+  let parsedTable = null;
 
   // 1. Extract <hud>...</hud>
   let workingText = rawText.replace(/<hud>([\s\S]*?)<\/hud>/gi, (_match, inner) => {
@@ -452,16 +456,26 @@ export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry 
     try {
       parsedGraph = JSON.parse(rawInner);
     } catch (_) {
-      // If the LLM put a raw expression like `<graph>2x^2 + 5x + 2</graph>` instead of JSON, wrap it!
       if (rawInner) {
         parsedGraph = {
           functions: [rawInner.replace(/^\$\$|\$\$$/g, '').replace(/\$/g, '').trim()],
-          title: `Interactive Graph`,
+          title: `Function Graph`,
           xDomain: [-8, 8],
           yDomain: [-6, 10]
         };
       }
     }
+    return ' ';
+  });
+
+  // 2b. Extract <table_data>...</table_data>
+  workingText = workingText.replace(/<table_data>([\s\S]*?)<\/table_data>/gi, (_match, inner) => {
+    try {
+      const parsed = JSON.parse(inner.trim());
+      if (parsed && Array.isArray(parsed.headers) && Array.isArray(parsed.rows)) {
+        parsedTable = parsed;
+      }
+    } catch (_) {}
     return ' ';
   });
 
@@ -487,14 +501,15 @@ export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry 
   const telemetry = normalizeTelemetryPayload(parsedTelemetry, fallbackTelemetry || DEFAULT_TELEMETRY);
   const audit = sanitizeForSpeech(workingText, maxWords);
 
-  // Also detect if spoken text explicitly asks the Manim video question
-  if (/manim|instructional\s+video/i.test(audit.cleanText)) {
+  // Also detect if spoken text explicitly offers the step-by-step solution video
+  if (/\b(solution\s+video|instructional\s+video|step-by-step\s+video|watch\s+a\s+full)\b/i.test(audit.cleanText)) {
     telemetry.session_complete = true;
   }
 
   return {
     hudLatex,
     graphSpec: parsedGraph,
+    tableSpec: parsedTable,
     telemetry,
     spokenText: audit.cleanText,
     audit
@@ -534,6 +549,10 @@ export function sanitizeForSpeech(rawText, maxWords = 30) {
   if (/<graph>[\s\S]*?<\/graph>/i.test(text)) {
     text = text.replace(/<graph>[\s\S]*?<\/graph>/gi, ' ').trim();
     audit.graphStripped = true;
+  }
+
+  if (/<table_data>[\s\S]*?<\/table_data>/i.test(text)) {
+    text = text.replace(/<table_data>[\s\S]*?<\/table_data>/gi, ' ').trim();
   }
 
   if (/<telemetry>[\s\S]*?<\/telemetry>/i.test(text)) {

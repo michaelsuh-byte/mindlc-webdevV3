@@ -94,7 +94,7 @@ class SocraticGeminiChatApp {
 
     this.appendChatMessage(
       'svs',
-      'Hi! I am your Ontario high school STEM tutor with Tri-Channel Math HUD, Interactive Graphing, Smart Speech Pause Detection, and Manim Instructional Video generation. Pick a starter problem below or ask any STEM question.',
+      'Hi! I am your Ontario high school STEM tutor with interactive graphing, step-by-step visual solution videos, and natural voice guidance. Pick a starter problem below or ask any STEM question.',
       `${VOCAL_PROFILES[this.activeProfileKey].code} • ${FLIGHT_MODES[this.activeModeId].name}`,
       ''
     );
@@ -378,19 +378,19 @@ class SocraticGeminiChatApp {
   }
 
   /**
-   * Explicitly ends the current question session and asks the user if they want a Manim instructional video
+   * Explicitly ends the current question session and asks the user if they want a step-by-step solution video
    */
   offerEndOfSessionManimVideo() {
     this.awaitingManimConsent = true;
     const spoken =
-      'We have completed this question session! Would you like to see a full instructional video using the Manim engine and voice explanation on the question we just discussed?';
+      'Great work completing this problem! Would you like to watch a full step-by-step solution video with voice explanation for the question we just solved?';
     const profile = VOCAL_PROFILES[this.activeProfileKey];
     const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
 
     this.appendChatMessage(
       'svs',
       spoken,
-      `${profile.code} (${voiceName}) • End of Session Offer`,
+      `${profile.code} (${voiceName}) • Session Complete`,
       this.lastHudLatex,
       { offerManim: true }
     );
@@ -399,7 +399,7 @@ class SocraticGeminiChatApp {
   }
 
   /**
-   * Handles the user's YES or NO response to the End-of-Session Manim video prompt
+   * Handles the user's YES or NO response to the End-of-Session solution video prompt
    */
   async handleManimConsentDecision(decision) {
     this.awaitingManimConsent = false;
@@ -419,31 +419,31 @@ class SocraticGeminiChatApp {
       return;
     }
 
-    // User chose YES -> Generate Manim Storyboard and render Manim Canvas Video Player in chat
+    // User chose YES -> Generate Step-by-Step Solution Storyboard and render Video Player in chat
     const loadingRow = this.appendThinkingBubble(
-      `Rendering Manim instructional video scenes & synchronizing ${voiceName} voiceover...`
+      `Preparing step-by-step visual solution & ${voiceName} voice explanation...`
     );
 
     try {
       const storyboard = await this.fetchManimStoryboard();
       loadingRow.remove();
 
-      const introText = `Here is your full Manim instructional video for "${storyboard.title}", narrated with the ${voiceName} voice model.`;
+      const introText = `Here is the complete step-by-step solution for "${storyboard.title}". Use the Step buttons below the screen to review any part at your own pace.`;
       this.appendChatMessage(
         'svs',
         introText,
-        `${profile.code} (${voiceName}) • Manim Engine Video`,
+        `${profile.code} (${voiceName}) • Step-by-Step Solution Video`,
         '',
         { manimStoryboard: storyboard }
       );
     } catch (err) {
       loadingRow.remove();
-      console.warn('Manim generation error, using fallback storyboard:', err);
+      console.warn('Solution video generation fallback:', err);
       const fallbackStoryboard = this.buildClientFallbackManimStoryboard();
       this.appendChatMessage(
         'svs',
-        `Here is your full Manim instructional video for "${fallbackStoryboard.title}", narrated with the ${voiceName} voice model.`,
-        `${profile.code} (${voiceName}) • Manim Engine Video`,
+        `Here is the complete step-by-step solution for "${fallbackStoryboard.title}". Use the Step buttons below the screen to review any part at your own pace.`,
+        `${profile.code} (${voiceName}) • Step-by-Step Solution Video`,
         '',
         { manimStoryboard: fallbackStoryboard }
       );
@@ -484,53 +484,63 @@ class SocraticGeminiChatApp {
       '2*x^2 + 5*x + 2';
 
     return {
-      title: 'Formal Step-by-Step Solution & Concept Proof',
-      course: 'Ontario STEM (MCR3U / MHF4U / MCV4U)',
+      title: 'Step-by-Step Solution & Concept Proof',
+      course: 'Ontario STEM',
       xDomain: [-5, 4],
       yDomain: [-4, 10],
       scenes: [
         {
-          heading: 'Step 1: Formal Problem Statement & Standard Form',
-          conceptTag: 'Standard Form Identification: ax² + bx + c = 0',
+          heading: 'Step 1: Standard Form & Coefficients',
+          conceptTag: 'Quadratic Form: ax² + bx + c = 0',
           latex: cleanLatex,
-          annotation: 'Express the equation in standard polynomial form and identify all constant coefficients.',
-          narration: 'We begin our formal solution by writing the equation in standard form and identifying its exact coefficients: leading coefficient a equals two, linear coefficient b equals five, and constant c equals two.',
+          table: {
+            headers: ['Parameter', 'Value', 'Term Role'],
+            rows: [
+              ['a', '2', 'Leading (x²)'],
+              ['b', '5', 'Linear (x)'],
+              ['c', '2', 'Constant y-int']
+            ]
+          },
+          narration: 'We begin our formal solution by writing the quadratic equation in standard form and identifying its exact coefficients: leading coefficient a equals two, linear coefficient b equals five, and constant c equals two.',
           graphExpr: fnExpr,
           highlightPoint: [0, 2]
         },
         {
-          heading: 'Step 2: Governing Principle — The ac-Decomposition Theorem',
-          conceptTag: 'Theorem: Find integers p, q such that p·q = a·c and p + q = b',
-          latex: 'a \\cdot c = 2 \\times 2 = 4, \\quad b = 5 \\implies p = 4,\\; q = 1',
-          annotation: 'Since a·c = 4 and b = 5, the unique factor pair satisfying both conditions is p = 4 and q = 1.',
-          narration: 'By the decomposition factoring theorem, we multiply the leading coefficient a by the constant c to obtain four. We then determine the two integers that multiply to positive four and sum to positive five, which are four and one.',
+          heading: 'Step 2: Product-Sum Decomposition',
+          conceptTag: 'Rule: Find p, q where p · q = a · c and p + q = b',
+          latex: 'a \\cdot c = 4, \\quad b = 5 \\implies p = 4,\\; q = 1',
+          table: {
+            headers: ['Factor Pair (p, q)', 'Product (p · q)', 'Sum (p + q)'],
+            rows: [
+              ['4 and 1', '4 ✓', '5 ✓ (Selected)'],
+              ['2 and 2', '4 ✓', '4 ✗']
+            ]
+          },
+          narration: 'By the decomposition method, we multiply the leading coefficient a by the constant c to obtain four. Testing factor pairs in our table, four and one multiply to positive four and sum to positive five.',
           graphExpr: fnExpr,
           highlightPoint: [-1.25, -1.125]
         },
         {
-          heading: 'Step 3: Splitting the Linear Term & Factoring by Grouping',
-          conceptTag: 'Distributive Law: Group Pairs & Extract Common Monomials',
-          latex: '2x^2 + 4x + 1x + 2 = 0 \\implies 2x(x + 2) + 1(x + 2) = 0',
-          annotation: 'Decompose 5x into 4x + 1x, then factor 2x from the first group and 1 from the second group.',
-          narration: 'Next, we rewrite the middle term five x as four x plus one x. Factoring by grouping allows us to extract two x from the first pair of terms and positive one from the second pair, producing a common binomial factor of x plus two.',
+          heading: 'Step 3: Splitting the Linear Term & Grouping',
+          conceptTag: 'Rewrite 5x as 4x + x and factor each pair',
+          latex: '2x^2 + 4x + x + 2 = 0 \\implies 2x(x + 2) + 1(x + 2) = 0',
+          annotation: 'Shared binomial factor (x + 2) appears in both grouped terms.',
+          narration: 'Next, we rewrite the middle term five x as four x plus one x. Factoring by grouping extracts two x from the first pair and positive one from the second pair, revealing the shared binomial factor x plus two.',
           graphExpr: fnExpr,
           highlightPoint: [-2, 0]
         },
         {
-          heading: 'Step 4: Complete Factorization & Zero-Product Property',
-          conceptTag: 'Zero-Product Property: A · B = 0 ⟺ A = 0 or B = 0',
-          latex: '(2x + 1)(x + 2) = 0 \\implies 2x + 1 = 0 \\;\\text{ or }\\; x + 2 = 0',
-          annotation: 'Factor out (x + 2) completely and set each linear factor equal to zero.',
-          narration: 'Factoring out the shared binomial x plus two gives the fully factored equation: two x plus one, multiplied by x plus two, equals zero. Applying the Zero-Product Property, we set each linear factor equal to zero independently.',
-          graphExpr: fnExpr,
-          highlightPoint: [-0.5, 0]
-        },
-        {
-          heading: 'Step 5: Exact Solution Set & Graphical Verification',
-          conceptTag: 'Final Verified Roots & Coordinate Intercepts',
-          latex: '\\therefore x_1 = -\\frac{1}{2} = -0.5, \\quad x_2 = -2',
-          annotation: 'Both roots are verified as the exact x-intercepts (-2, 0) and (-0.5, 0) on the parabola.',
-          narration: 'Solving each linear equation yields our final exact solutions: x equals negative one half, and x equals negative two. On the coordinate plane, these two algebraic roots correspond directly to the horizontal x-intercepts of the parabola.',
+          heading: 'Step 4: Zero-Product Property & Verified Roots',
+          conceptTag: 'Set each linear factor equal to zero',
+          latex: '(2x + 1)(x + 2) = 0 \\implies x_1 = -0.5, \\quad x_2 = -2',
+          table: {
+            headers: ['Linear Factor', 'Algebraic Root', 'Graph Intercept'],
+            rows: [
+              ['2x + 1 = 0', 'x = -0.5', '(-0.5, 0)'],
+              ['x + 2 = 0', 'x = -2', '(-2, 0)']
+            ]
+          },
+          narration: 'Setting each factor to zero yields our final verified solutions: x equals negative zero point five, and x equals negative two, which correspond directly to the x-intercepts highlighted on the graph.',
           graphExpr: fnExpr,
           highlightPoint: [-0.5, 0]
         }
@@ -957,6 +967,7 @@ class SocraticGeminiChatApp {
 
     this.appendChatMessage('svs', packet.spokenText, footerTag, packet.hudLatex, {
       graphSpec,
+      tableSpec: packet.tableSpec,
       offerManim: isSessionComplete
     });
 
@@ -1097,22 +1108,56 @@ class SocraticGeminiChatApp {
     p.textContent = cleanVisibleText;
     bubble.appendChild(p);
 
-    // 1. Interactive Open-Source Graphing Calculator Card inside the chat bubble
+    // 0. Structured Problem-Solving / Reference Table inside the chat bubble
+    if (
+      role === 'svs' &&
+      attachments.tableSpec &&
+      Array.isArray(attachments.tableSpec.headers) &&
+      Array.isArray(attachments.tableSpec.rows)
+    ) {
+      const tableEl = document.createElement('table');
+      tableEl.className = 'stem-info-table';
+      const thead = document.createElement('thead');
+      const hRow = document.createElement('tr');
+      attachments.tableSpec.headers.forEach((h) => {
+        const th = document.createElement('th');
+        th.textContent = String(h).replace(/\$/g, '');
+        hRow.appendChild(th);
+      });
+      thead.appendChild(hRow);
+      tableEl.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      attachments.tableSpec.rows.forEach((r) => {
+        if (!Array.isArray(r)) return;
+        const tr = document.createElement('tr');
+        r.forEach((cell) => {
+          const td = document.createElement('td');
+          td.textContent = String(cell).replace(/\$/g, '');
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      tableEl.appendChild(tbody);
+      bubble.appendChild(tableEl);
+    }
+
+    // 1. Interactive Graphing Calculator Card inside the chat bubble
     if (role === 'svs' && attachments.graphSpec) {
       const graphWidget = createInteractiveGraphElement(attachments.graphSpec);
       bubble.appendChild(graphWidget);
     }
 
-    // 2. End-of-Session Manim Instructional Video Consent Offer Card
+    // 2. End-of-Session Step-by-Step Solution Video Consent Offer Card
     if (role === 'svs' && attachments.offerManim) {
       const offerCard = document.createElement('div');
       offerCard.className = 'manim-offer-card';
 
       const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
       offerCard.innerHTML = `
-        <div class="manim-offer-title">🎬 End-of-Session Manim Instructional Video</div>
+        <div class="manim-offer-title">🎬 Step-by-Step Solution Video</div>
         <div class="manim-offer-desc">
-          Would you like me to generate a full animated Manim instructional video in the chat (narrated by <strong>${voiceName}</strong>) for the question we just discussed?
+          Would you like to watch a full step-by-step animated solution with voice explanation (narrated by <strong>${voiceName}</strong>) for this question?
         </div>
       `;
 
@@ -1122,7 +1167,7 @@ class SocraticGeminiChatApp {
       const yesBtn = document.createElement('button');
       yesBtn.type = 'button';
       yesBtn.className = 'manim-yes-btn';
-      yesBtn.textContent = '🎬 Yes, Create Manim Video';
+      yesBtn.textContent = '▶ Yes, Watch Solution Video';
 
       const noBtn = document.createElement('button');
       noBtn.type = 'button';
@@ -1196,8 +1241,8 @@ class SocraticGeminiChatApp {
         const manimQuickBtn = document.createElement('button');
         manimQuickBtn.type = 'button';
         manimQuickBtn.className = 'speak-again-btn';
-        manimQuickBtn.textContent = '🎬 Full Solution Video';
-        manimQuickBtn.title = 'Generate step-by-step formal Manim solution video in chat';
+        manimQuickBtn.textContent = '🎬 Solution Video';
+        manimQuickBtn.title = 'Watch a full step-by-step visual solution video with voice explanation';
         manimQuickBtn.addEventListener('click', () => {
           this.handleManimConsentDecision('YES');
         });

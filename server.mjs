@@ -122,7 +122,7 @@ async function handleChatApi(req, res) {
 
 /**
  * POST /api/manim-script
- * Generates a 5-Step Formal Full Solution & Concept Walkthrough Manim Storyboard JSON
+ * Generates a Multi-Screen Step-by-Step Formal Solution Storyboard with Concise Visual Cues & Tables
  */
 async function handleManimScriptApi(req, res) {
   try {
@@ -140,33 +140,29 @@ async function handleManimScriptApi(req, res) {
       .map(t => `${t.role === 'svs' ? 'Tutor' : 'Student'}: ${t.text}`)
       .join('\n');
 
-    const prompt = `You are a Master Ontario Secondary STEM Instructor (MCR3U, MHF4U, MCV4U, SPH4U, SCH4U) authoring a formal 3Blue1Brown / Manim instructional solution video.
+    const prompt = `You are a Master Ontario Secondary STEM Instructor (MCR3U, MHF4U, MCV4U, SPH4U, SCH4U) authoring a multi-screen step-by-step formal solution video.
 
 Identify the exact math or science problem from the session below:
 ${transcriptSummary || topicHint || 'Solve and graph the quadratic equation 2x^2 + 5x + 2 = 0'}
 
-CRITICAL REQUIREMENTS:
-1. DO NOT write a casual summary of the conversation (never say "As we discussed" or "Earlier you said").
-2. Instead, produce a FORMAL, COMPLETE, SELF-CONTAINED STEP-BY-STEP SOLUTION of the problem from first principles to the final verified answer, teaching the underlying mathematical/scientific concept rigorously.
-3. Structure the solution into exactly 5 sequential steps in the "scenes" array:
-   - Step 1: Formal Problem Statement, Standard Form & Given Parameters
-   - Step 2: Governing Mathematical Theorem, Definition, or Physical Law (explain WHY this principle applies)
-   - Step 3: Explicit Substitution & Initial Algebraic / Analytical Transformation
-   - Step 4: Intermediate Simplification, Factoring, or Solving Step-by-Step
-   - Step 5: Final Exact Solution, Domain/Constraint Verification & Graphical Interpretation
-4. Every step MUST include:
-   - "heading": Formal title of the step (e.g. "Step 2: Governing Principle — The ac-Decomposition Method")
-   - "conceptTag": The specific mathematical rule/theorem applied in this step (e.g. "Theorem: Find p, q such that p·q = a·c and p + q = b")
-   - "latex": The formal mathematical equation/derivation line for this step in pure LaTeX WITHOUT any $ signs
-   - "annotation": Concise 1-line formal justification of the algebraic transformation
-   - "narration": 2 to 3 complete, formal, articulate spoken sentences (30-50 words) explaining the concept and exact algebraic step in plain spoken English (write all math phonetically in words for TTS; zero $ signs or raw LaTeX commands).
-   - "graphExpr": A valid JavaScript math expression in x to plot on the Manim coordinate plane (e.g. "2*x^2 + 5*x + 2"), or "" if non-graphical
-   - "highlightPoint": An array [x, y] of a key coordinate point to highlight on the graph in this step (e.g. [-0.5, 0] or [0, 2]), or null
+CRITICAL UX & PEDAGOGICAL REQUIREMENTS:
+1. NEVER refer to "Manim" or any underlying video technology.
+2. DO NOT write a casual summary of the chat conversation. Present a FORMAL, COMPLETE, STEP-BY-STEP SOLUTION from start to finish.
+3. Structure the video into 4 or 5 distinct step screens in the "scenes" array (Step 1, Step 2, Step 3, Step 4, ...).
+4. Keep on-screen text strictly CONCISE so each step fits on a single slide with ZERO scrolling:
+   - "heading": Short 3-to-6 word step title (e.g. "Step 1: Standard Form & Coefficients")
+   - "conceptTag": Short 1-line mathematical rule or principle (under 10 words)
+   - "latex": Single clean LaTeX equation for this step WITHOUT any $ signs
+   - "table": When helpful to organize coefficients, factor pairs, intervals, sign charts, or roots/intercepts, provide a compact table object: {"headers": ["Col 1", "Col 2", "Col 3"], "rows": [["...", "...", "..."]]} with at most 3 rows and short cell values. Otherwise set "table": null.
+   - "annotation": Short 1-line visual takeaway (under 12 words) if no table is used.
+5. "narration": Detailed, articulate spoken explanation (2 to 3 complete sentences, 30-45 words) spoken by the voice engine explaining the concept and step in depth (plain spoken English only, no $ signs or raw LaTeX).
+6. "graphExpr": Valid JS math expression in x to plot (e.g. "2*x^2 + 5*x + 2"), or "" if non-graphical.
+7. "highlightPoint": Stationary key point [x, y] to highlight on the graph for this step (e.g. [-0.5, 0] or [0, 2]), or null.
 
 Return ONLY valid JSON matching this schema:
 {
-  "title": "Formal Solution: ...",
-  "course": "Ontario STEM (e.g. MCR3U / MCV4U)",
+  "title": "Step-by-Step Solution: ...",
+  "course": "Ontario STEM",
   "xDomain": [-6, 6],
   "yDomain": [-6, 10],
   "scenes": [
@@ -174,6 +170,7 @@ Return ONLY valid JSON matching this schema:
       "heading": "Step 1: ...",
       "conceptTag": "...",
       "latex": "...",
+      "table": {"headers": ["Parameter", "Value", "Meaning"], "rows": [["a", "2", "Leading coeff"]]},
       "annotation": "...",
       "narration": "...",
       "graphExpr": "...",
