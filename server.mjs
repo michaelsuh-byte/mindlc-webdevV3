@@ -122,7 +122,7 @@ async function handleChatApi(req, res) {
 
 /**
  * POST /api/manim-script
- * Generates a 4-Scene Manim Instructional Video Storyboard JSON from the current question session
+ * Generates a 5-Step Formal Full Solution & Concept Walkthrough Manim Storyboard JSON
  */
 async function handleManimScriptApi(req, res) {
   try {
@@ -136,24 +136,48 @@ async function handleManimScriptApi(req, res) {
 
     const { history = [], topicHint = '' } = body;
     const transcriptSummary = history
-      .slice(-10)
+      .slice(-12)
       .map(t => `${t.role === 'svs' ? 'Tutor' : 'Student'}: ${t.text}`)
       .join('\n');
 
-    const prompt = `Based on the following high school STEM tutoring session, create a complete 4-scene Manim instructional animation storyboard that explains and solves the problem from start to finish.
-Session Transcript:
-${transcriptSummary || topicHint || 'Factoring and solving 2x^2 + 5x + 2 = 0'}
+    const prompt = `You are a Master Ontario Secondary STEM Instructor (MCR3U, MHF4U, MCV4U, SPH4U, SCH4U) authoring a formal 3Blue1Brown / Manim instructional solution video.
 
-Return ONLY valid JSON matching this exact structure (no markdown code fences, no dollar signs inside latex or narration):
+Identify the exact math or science problem from the session below:
+${transcriptSummary || topicHint || 'Solve and graph the quadratic equation 2x^2 + 5x + 2 = 0'}
+
+CRITICAL REQUIREMENTS:
+1. DO NOT write a casual summary of the conversation (never say "As we discussed" or "Earlier you said").
+2. Instead, produce a FORMAL, COMPLETE, SELF-CONTAINED STEP-BY-STEP SOLUTION of the problem from first principles to the final verified answer, teaching the underlying mathematical/scientific concept rigorously.
+3. Structure the solution into exactly 5 sequential steps in the "scenes" array:
+   - Step 1: Formal Problem Statement, Standard Form & Given Parameters
+   - Step 2: Governing Mathematical Theorem, Definition, or Physical Law (explain WHY this principle applies)
+   - Step 3: Explicit Substitution & Initial Algebraic / Analytical Transformation
+   - Step 4: Intermediate Simplification, Factoring, or Solving Step-by-Step
+   - Step 5: Final Exact Solution, Domain/Constraint Verification & Graphical Interpretation
+4. Every step MUST include:
+   - "heading": Formal title of the step (e.g. "Step 2: Governing Principle — The ac-Decomposition Method")
+   - "conceptTag": The specific mathematical rule/theorem applied in this step (e.g. "Theorem: Find p, q such that p·q = a·c and p + q = b")
+   - "latex": The formal mathematical equation/derivation line for this step in pure LaTeX WITHOUT any $ signs
+   - "annotation": Concise 1-line formal justification of the algebraic transformation
+   - "narration": 2 to 3 complete, formal, articulate spoken sentences (30-50 words) explaining the concept and exact algebraic step in plain spoken English (write all math phonetically in words for TTS; zero $ signs or raw LaTeX commands).
+   - "graphExpr": A valid JavaScript math expression in x to plot on the Manim coordinate plane (e.g. "2*x^2 + 5*x + 2"), or "" if non-graphical
+   - "highlightPoint": An array [x, y] of a key coordinate point to highlight on the graph in this step (e.g. [-0.5, 0] or [0, 2]), or null
+
+Return ONLY valid JSON matching this schema:
 {
-  "title": "Concise title of the problem",
+  "title": "Formal Solution: ...",
+  "course": "Ontario STEM (e.g. MCR3U / MCV4U)",
+  "xDomain": [-6, 6],
+  "yDomain": [-6, 10],
   "scenes": [
     {
       "heading": "Step 1: ...",
-      "latex": "Pure LaTeX formula without any $ signs, e.g. 2x^2 + 5x + 2 = 0",
-      "annotation": "Short 1-line visual insight",
-      "narration": "1 to 2 natural spoken English sentences explaining this step (write all math in spoken words, no symbols or $ signs).",
-      "graphExpr": "Optional JS-compatible function of x to plot on the coordinate plane, e.g. 2*x^2 + 5*x + 2, or empty string"
+      "conceptTag": "...",
+      "latex": "...",
+      "annotation": "...",
+      "narration": "...",
+      "graphExpr": "...",
+      "highlightPoint": [0, 2]
     }
   ]
 }`;
@@ -167,8 +191,8 @@ Return ONLY valid JSON matching this exact structure (no markdown code fences, n
         generationConfig: {
           thinkingConfig: { thinkingBudget: 0 },
           responseMimeType: 'application/json',
-          temperature: 0.35,
-          maxOutputTokens: 900
+          temperature: 0.3,
+          maxOutputTokens: 2048
         }
       })
     });

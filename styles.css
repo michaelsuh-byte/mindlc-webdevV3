@@ -1050,15 +1050,53 @@ input[type="range"] {
 .desmos-tooltip {
   position: absolute;
   pointer-events: none;
-  background: rgba(15, 19, 28, 0.92);
-  border: 1px solid var(--accent-blue);
+  background: rgba(11, 16, 27, 0.96);
+  border: 1px solid rgba(56, 189, 248, 0.65);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
   color: #ffffff;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 6px;
-  transform: translate(10px, -24px);
+  padding: 3px 9px;
+  border-radius: 999px;
+  transform: translate(10px, -28px);
   white-space: nowrap;
+}
+
+.desmos-features-strip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.desmos-features-strip[hidden] {
+  display: none;
+}
+
+.desmos-feature-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(20, 27, 42, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  color: #cbd5e1;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.desmos-feature-chip:hover {
+  border-color: var(--accent-blue);
+  color: #ffffff;
+}
+
+.desmos-feature-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
 }
 
 .desmos-expr-bar {
@@ -1261,27 +1299,65 @@ input[type="range"] {
   height: auto;
 }
 
-.manim-tex-overlay {
+.manim-derivation-ledger {
   position: absolute;
-  top: 23%;
-  left: 6%;
-  right: 6%;
-  height: 21%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  pointer-events: auto;
+  padding-right: 4px;
+}
+
+.manim-ledger-step {
+  background: rgba(13, 21, 38, 0.88);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 8px;
+  padding: 6px 10px;
+  transition: all 0.25s ease;
+}
+
+.manim-ledger-step.completed-step {
+  opacity: 0.78;
+  border-left: 3px solid var(--accent-green);
+}
+
+.manim-ledger-step.active-step {
+  background: rgba(18, 28, 48, 0.96);
+  border: 1.5px solid rgba(250, 204, 21, 0.85);
+  box-shadow: 0 0 14px rgba(250, 204, 21, 0.18);
+}
+
+.manim-ledger-step-hdr {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--accent-blue);
+  margin-bottom: 3px;
+}
+
+.manim-ledger-step.active-step .manim-ledger-step-hdr {
+  color: #facc15;
+}
+
+.manim-ledger-math {
+  font-size: 13.5px;
+  color: #ffffff;
+  overflow-x: auto;
+  padding: 2px 0;
+}
+
+.manim-ledger-note {
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: #81c995;
+  line-height: 1.3;
+}
+
+.manim-left-ctrls {
   display: flex;
   align-items: center;
-  justify-content: center;
-  pointer-events: none;
-}
-
-.manim-tex-box {
-  color: #ffffff;
-  font-size: 15px;
-  text-align: center;
-  transition: opacity 0.15s ease, transform 0.15s ease;
-}
-
-.manim-tex-box .katex-display {
-  margin: 0 !important;
+  gap: 6px;
 }
 
 .manim-controls-bar {

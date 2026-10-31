@@ -477,44 +477,62 @@ class SocraticGeminiChatApp {
   }
 
   buildClientFallbackManimStoryboard() {
-    const cleanLatex = sanitizeLatexForHud(this.lastHudLatex || 'f(x) = 2x^2 + 5x + 2');
+    const cleanLatex = sanitizeLatexForHud(this.lastHudLatex || '2x^2 + 5x + 2 = 0');
     const fnExpr =
       this.lastGraphSpec?.functions?.[0]?.expr ||
+      (typeof this.lastGraphSpec?.functions?.[0] === 'string' ? this.lastGraphSpec.functions[0] : '') ||
       '2*x^2 + 5*x + 2';
 
     return {
-      title: 'Step-by-Step STEM Concept Synthesis',
-      course: 'Ontario STEM (MCR3U / MCV4U)',
-      xDomain: [-6, 6],
-      yDomain: [-6, 10],
+      title: 'Formal Step-by-Step Solution & Concept Proof',
+      course: 'Ontario STEM (MCR3U / MHF4U / MCV4U)',
+      xDomain: [-5, 4],
+      yDomain: [-4, 10],
       scenes: [
         {
-          heading: 'Scene 1: Problem Formulation',
+          heading: 'Step 1: Formal Problem Statement & Standard Form',
+          conceptTag: 'Standard Form Identification: ax² + bx + c = 0',
           latex: cleanLatex,
-          narration: 'Let us review the core mathematical relationship we explored in this session and identify its structure.',
+          annotation: 'Express the equation in standard polynomial form and identify all constant coefficients.',
+          narration: 'We begin our formal solution by writing the equation in standard form and identifying its exact coefficients: leading coefficient a equals two, linear coefficient b equals five, and constant c equals two.',
           graphExpr: fnExpr,
-          highlightPoint: null
+          highlightPoint: [0, 2]
         },
         {
-          heading: 'Scene 2: Algebraic Decomposition',
-          latex: '(2x + 1)(x + 2) = 0',
-          narration: 'By decomposing the expression into its constituent factors, each linear term reveals an invariant property of the system.',
+          heading: 'Step 2: Governing Principle — The ac-Decomposition Theorem',
+          conceptTag: 'Theorem: Find integers p, q such that p·q = a·c and p + q = b',
+          latex: 'a \\cdot c = 2 \\times 2 = 4, \\quad b = 5 \\implies p = 4,\\; q = 1',
+          annotation: 'Since a·c = 4 and b = 5, the unique factor pair satisfying both conditions is p = 4 and q = 1.',
+          narration: 'By the decomposition factoring theorem, we multiply the leading coefficient a by the constant c to obtain four. We then determine the two integers that multiply to positive four and sum to positive five, which are four and one.',
           graphExpr: fnExpr,
-          highlightPoint: [-0.5, 0]
+          highlightPoint: [-1.25, -1.125]
         },
         {
-          heading: 'Scene 3: Critical Points & Roots',
-          latex: 'x_1 = -0.5, \\quad x_2 = -2',
-          narration: 'Setting each factor to zero pinpoints the exact horizontal intercepts where the function crosses the axis.',
+          heading: 'Step 3: Splitting the Linear Term & Factoring by Grouping',
+          conceptTag: 'Distributive Law: Group Pairs & Extract Common Monomials',
+          latex: '2x^2 + 4x + 1x + 2 = 0 \\implies 2x(x + 2) + 1(x + 2) = 0',
+          annotation: 'Decompose 5x into 4x + 1x, then factor 2x from the first group and 1 from the second group.',
+          narration: 'Next, we rewrite the middle term five x as four x plus one x. Factoring by grouping allows us to extract two x from the first pair of terms and positive one from the second pair, producing a common binomial factor of x plus two.',
           graphExpr: fnExpr,
           highlightPoint: [-2, 0]
         },
         {
-          heading: 'Scene 4: Geometric & Graphical Verification',
-          latex: 'y_{min} = -1.125 \\text{ at } x = -1.25',
-          narration: 'Tracing the continuous curve across the coordinate plane confirms the vertex and connects the algebra to its visual geometry.',
+          heading: 'Step 4: Complete Factorization & Zero-Product Property',
+          conceptTag: 'Zero-Product Property: A · B = 0 ⟺ A = 0 or B = 0',
+          latex: '(2x + 1)(x + 2) = 0 \\implies 2x + 1 = 0 \\;\\text{ or }\\; x + 2 = 0',
+          annotation: 'Factor out (x + 2) completely and set each linear factor equal to zero.',
+          narration: 'Factoring out the shared binomial x plus two gives the fully factored equation: two x plus one, multiplied by x plus two, equals zero. Applying the Zero-Product Property, we set each linear factor equal to zero independently.',
           graphExpr: fnExpr,
-          highlightPoint: [-1.25, -1.125]
+          highlightPoint: [-0.5, 0]
+        },
+        {
+          heading: 'Step 5: Exact Solution Set & Graphical Verification',
+          conceptTag: 'Final Verified Roots & Coordinate Intercepts',
+          latex: '\\therefore x_1 = -\\frac{1}{2} = -0.5, \\quad x_2 = -2',
+          annotation: 'Both roots are verified as the exact x-intercepts (-2, 0) and (-0.5, 0) on the parabola.',
+          narration: 'Solving each linear equation yields our final exact solutions: x equals negative one half, and x equals negative two. On the coordinate plane, these two algebraic roots correspond directly to the horizontal x-intercepts of the parabola.',
+          graphExpr: fnExpr,
+          highlightPoint: [-0.5, 0]
         }
       ]
     };
@@ -775,19 +793,26 @@ class SocraticGeminiChatApp {
 
     this.appendChatMessage('student', utterance);
 
-    // Check if we are currently waiting for Yes/No consent for the End-of-Session Manim video
-    if (this.awaitingManimConsent) {
-      const consentIntent = detectManimConsentIntent(utterance);
+    // Check if we are currently waiting for Yes/No consent for the End-of-Session Manim video,
+    // OR if the last tutor turn mentioned video/manim/animation/solution and the student replied Yes/No
+    const consentIntent = detectManimConsentIntent(utterance);
+    const lastTutorMentionedVideo = /\b(manim|video|animation|walkthrough|full\s+solution|would\s+you\s+like)\b/i.test(
+      this.lastSpokenBurst || ''
+    );
+
+    if (this.awaitingManimConsent || lastTutorMentionedVideo) {
       if (consentIntent === 'YES' || consentIntent === 'NO') {
         await this.handleManimConsentDecision(consentIntent);
         return;
       }
-      // If the student asked a new question instead of answering Yes/No, clear consent wait and continue
       this.awaitingManimConsent = false;
     }
 
-    // Also allow explicit voice request like "make a manim video" at any time
-    if (/\b(make|create|show|generate)\b[\s\S]*\b(manim|instructional\s+video)\b/i.test(utterance)) {
+    // Also allow explicit voice/text request like "make a manim video", "show the video", "yes show video" at any time
+    if (
+      /\b(manim|instructional\s+video|solution\s+video)\b/i.test(utterance) ||
+      /\b(make|create|show|play|watch|generate|see)\b[\s\S]*\b(video|animation)\b/i.test(utterance)
+    ) {
       await this.handleManimConsentDecision('YES');
       return;
     }
@@ -1143,8 +1168,11 @@ class SocraticGeminiChatApp {
         }
       });
 
-      this.activeManimController = manimWidget.controller;
-      bubble.appendChild(manimWidget.element);
+      const manimEl = manimWidget?.element || manimWidget;
+      this.activeManimController = manimWidget?.controller || manimEl?.controller || null;
+      if (manimEl instanceof HTMLElement) {
+        bubble.appendChild(manimEl);
+      }
     }
 
     if (role === 'svs') {
@@ -1163,6 +1191,18 @@ class SocraticGeminiChatApp {
         this.avionics.speakCalibratedBurst(cleanVisibleText, this.activeProfileKey);
       });
       footer.appendChild(replayBtn);
+
+      if (!attachments.manimStoryboard && this.hasActiveProblemTurn) {
+        const manimQuickBtn = document.createElement('button');
+        manimQuickBtn.type = 'button';
+        manimQuickBtn.className = 'speak-again-btn';
+        manimQuickBtn.textContent = '🎬 Full Solution Video';
+        manimQuickBtn.title = 'Generate step-by-step formal Manim solution video in chat';
+        manimQuickBtn.addEventListener('click', () => {
+          this.handleManimConsentDecision('YES');
+        });
+        footer.appendChild(manimQuickBtn);
+      }
 
       bubble.appendChild(footer);
     }
