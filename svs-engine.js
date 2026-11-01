@@ -280,7 +280,7 @@ Transmission:
 y = 2x^2 - 8x, \\quad \\text{Let } y = 0
 </hud>
 <telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":60,"i_eff":55,"i_reg":80,"cli":64,"hint_level":1,"session_complete":false}</telemetry>
-Close! When the entire equation equals zero, the height is zero, so we are looking for where the graph hits the flat ground—the x-intercepts. Looking back at the equation, what common factor can we pull out of both terms?`;
+Close! When the equation equals zero, the height is zero at the x-intercepts. Looking back at the equation, what common factor can we pull out of both terms?`;
 }
 
 /**
@@ -688,7 +688,7 @@ export function sanitizeForSpeech(rawText, maxWords = 30) {
     [/\s*==\s*/g, ' equals '],
     [/\s*=\s*/g, ' equals '],
     [/\s*\+\s*/g, ' plus '],
-    [/(\w)\s*-\s*(\w)/g, '$1 minus $2'],
+    [/(\b\d+|\b[a-zA-Z]\b)\s+-\s+(\d+|\b[a-zA-Z]\b)/g, '$1 minus $2'],
     [/\s*\*\s*/g, ' times '],
     [/\b([a-zA-Z])\s*\/\s*([a-zA-Z])\b/g, '$1 over $2']
   ];
@@ -846,7 +846,7 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, _profileK
   // Section 15 Case 3: Aborting Diagnostic on Student Stall (The Safety Net)
   if (/y-axis|y\s+axis/i.test(norm)) {
     return {
-      text: `<hud>y = 2x^2 - 8x, \\quad \\text{Let } y = 0</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":60,"i_eff":55,"i_reg":80,"cli":64,"hint_level":1,"session_complete":false}</telemetry>Close! When the entire equation equals zero, the height is zero, so we are looking for where the graph hits the flat ground—the x-intercepts. Looking back at the equation, what common factor can we pull out of both terms?`,
+      text: `<hud>y = 2x^2 - 8x, \\quad \\text{Let } y = 0</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":60,"i_eff":55,"i_reg":80,"cli":64,"hint_level":1,"session_complete":false}</telemetry>Close! When the equation equals zero, the height is zero at the x-intercepts. Looking back at the equation, what common factor can we pull out of both terms?`,
       command: null,
       fault: null
     };
