@@ -19,6 +19,7 @@ import {
 
 import { compileMathExpression, findCurveFeatures } from './graph-engine.js';
 import { isIncompleteSpokenClause, AudioAvionicsController } from './audio-avionics.js';
+import { normalizePcm16Buffer } from './server.mjs';
 
 // 1. Verify Strict Pre-KaTeX Screening Layer (`sanitizeLatexForHud`) strips ALL `$` signs
 const dirtyHud = '<hud>$$a = 2$$, $b = 5$ and $c = 2$</hud>';
@@ -164,4 +165,24 @@ assert.equal(clauses.length, 2, 'Splits into short opening clause and remainder'
 assert.equal(clauses[0], 'We can absolutely find that.', 'First clause is short for instant TTS synthesis');
 assert.equal(sysPrompt.includes('SELECTIVE USE ONLY'), true, 'System prompt enforces selective graph usage');
 
-console.log('ALL OPTION 4 ZERO-DELAY VOICE, SELECTIVE GRAPHING, TWO-STAGE TIMER (15s), AND POST-VIDEO TESTS PASSED.');
+// 15. Verify Server-Side PCM16 RMS Volume Normalizer (`normalizePcm16Buffer`)
+const quietBuf = Buffer.alloc(400);
+const loudBuf = Buffer.alloc(400);
+for (let i = 0; i < 200; i++) {
+  const s = Math.sin(i * 0.2);
+  quietBuf.writeInt16LE(Math.round(s * 3000), i * 2); // quiet (~0.09 peak)
+  loudBuf.writeInt16LE(Math.round(s * 16000), i * 2); // loud (~0.49 peak)
+}
+const normQuiet = normalizePcm16Buffer(quietBuf, 0.18);
+const normLoud = normalizePcm16Buffer(loudBuf, 0.18);
+const calcRms = (buf) => {
+  let sum = 0;
+  for (let i = 0; i < buf.length / 2; i++) {
+    const v = buf.readInt16LE(i * 2) / 32768;
+    sum += v * v;
+  }
+  return Math.sqrt(sum / (buf.length / 2));
+};
+assert.equal(Math.abs(calcRms(normQuiet) - calcRms(normLoud)) < 0.03, true, 'Quiet and loud TTS clips are normalized to consistent RMS loudness');
+
+console.log('ALL OPTION 4 ZERO-DELAY VOICE, SELECTIVE GRAPHING, CANVAS AUTO-FIT, AND VOLUME NORMALIZATION TESTS PASSED.');

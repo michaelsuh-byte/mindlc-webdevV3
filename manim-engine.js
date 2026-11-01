@@ -85,7 +85,7 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
       ];
 
   const LOGICAL_W = 660;
-  const LOGICAL_H = 310;
+  const LOGICAL_H = 324;
   const dpr = Math.min(2.5, Math.max(1, window.devicePixelRatio || 1));
 
   const card = document.createElement('div');
@@ -116,9 +116,13 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
   canvas.className = 'manim-canvas';
   stage.appendChild(canvas);
 
-  // Single-Step Concise Visual Content Overlay (Left Side: Equation + Table/Key Cue)
+  // Single-Step Concise Visual Content Overlay (Percentage-bounded inside canvas safe zone)
   const slideContentOverlay = document.createElement('div');
   slideContentOverlay.className = 'manim-slide-content';
+
+  const slideInner = document.createElement('div');
+  slideInner.className = 'manim-slide-inner';
+  slideContentOverlay.appendChild(slideInner);
   stage.appendChild(slideContentOverlay);
 
   card.appendChild(stage);
@@ -170,39 +174,91 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
   }
 
   /**
+   * Dynamically scales the equation and inner content stack if needed so that no box, table,
+   * or text ever overlaps or extends beyond the canvas area at any window size.
+   */
+  function fitSlideContentToStage() {
+    if (isDestroyed) return;
+    slideInner.style.transform = 'none';
+
+    const mathBody = slideInner.querySelector('.manim-math-fit-inner');
+    const mathCard = slideInner.querySelector('.manim-slide-math-card');
+    if (mathBody && mathCard) {
+      mathBody.style.transform = 'none';
+      const availMathW = Math.max(80, mathCard.clientWidth - 22);
+      const naturalMathW = mathBody.scrollWidth;
+      if (naturalMathW > availMathW && availMathW > 0) {
+        const mathScale = Math.max(0.62, availMathW / naturalMathW);
+        mathBody.style.transform = `scale(${mathScale.toFixed(3)})`;
+      }
+    }
+
+    const availW = slideContentOverlay.clientWidth;
+    const availH = slideContentOverlay.clientHeight;
+    if (availW <= 0 || availH <= 0) return;
+
+    const naturalW = slideInner.scrollWidth;
+    const naturalH = slideInner.offsetHeight;
+    const scaleX = naturalW > availW ? (availW - 4) / naturalW : 1;
+    const scaleY = naturalH > availH ? (availH - 4) / naturalH : 1;
+    const scale = Math.max(0.6, Math.min(1, scaleX, scaleY));
+
+    if (scale < 0.995) {
+      slideInner.style.transform = `scale(${scale.toFixed(3)})`;
+    }
+  }
+
+  if (typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(() => {
+      fitSlideContentToStage();
+    });
+    ro.observe(stage);
+  }
+
+  /**
    * Renders ONLY the single active step's concise visual cues (Equation + Table or Key Rule).
-   * Never renders the voiceover script and never overflows with a scrollbar.
+   * Never renders the voiceover script and never overflows or extends past the canvas.
    */
   function renderStepSlideContent(sceneIdx) {
-    slideContentOverlay.innerHTML = '';
+    slideInner.innerHTML = '';
     const sc = scenes[sceneIdx] || scenes[0];
     if (!sc) return;
+
+    const rawGraphExpr = String(sc.graphExpr || '').trim();
+    const stepHasGraph = Boolean(rawGraphExpr && !/^(none|null|false|n\/a)$/i.test(rawGraphExpr));
+    slideContentOverlay.style.left = '2.75%';
+    slideContentOverlay.style.top = '16.5%';
+    slideContentOverlay.style.width = stepHasGraph ? '54.5%' : '94.5%';
+    slideContentOverlay.style.height = '78.5%';
 
     // 1. Concise Concept / Rule Pill
     if (sc.conceptTag) {
       const rulePill = document.createElement('div');
       rulePill.className = 'manim-rule-pill';
       rulePill.textContent = String(sc.conceptTag).replace(/\$/g, '');
-      slideContentOverlay.appendChild(rulePill);
+      slideInner.appendChild(rulePill);
     }
 
-    // 2. Primary Mathematical Equation Box (KaTeX)
+    // 2. Primary Mathematical Equation Box (KaTeX inside auto-fitting wrapper)
     const mathCard = document.createElement('div');
     mathCard.className = 'manim-slide-math-card';
+    const mathFitInner = document.createElement('div');
+    mathFitInner.className = 'manim-math-fit-inner';
     const cleanLatex = sanitizeLatexForHud(sc.latex || '');
     if (window.katex && cleanLatex) {
       try {
-        window.katex.render(cleanLatex, mathCard, {
+        window.katex.render(cleanLatex, mathFitInner, {
           displayMode: false,
           throwOnError: false
         });
       } catch (_) {
-        mathCard.textContent = cleanLatex;
+        mathFitInner.textContent = cleanLatex;
       }
     } else {
-      mathCard.textContent = cleanLatex;
+      mathFitInner.textContent = cleanLatex;
     }
-    slideContentOverlay.appendChild(mathCard);
+    mathCard.appendChild(mathFitInner);
+    slideInner.appendChild(mathCard);
 
     // 3. Structured Table (if provided for this step) OR concise 1-line Key Takeaway
     if (
@@ -236,13 +292,17 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
         tbody.appendChild(tr);
       });
       tableEl.appendChild(tbody);
-      slideContentOverlay.appendChild(tableEl);
+      slideInner.appendChild(tableEl);
     } else if (sc.annotation) {
       const keyCue = document.createElement('div');
       keyCue.className = 'manim-slide-key-cue';
       keyCue.textContent = String(sc.annotation).replace(/\$/g, '');
-      slideContentOverlay.appendChild(keyCue);
+      slideInner.appendChild(keyCue);
     }
+
+    requestAnimationFrame(() => {
+      fitSlideContentToStage();
+    });
   }
 
   async function fetchSceneAudioBlob(sceneIdx) {
@@ -290,6 +350,38 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     }
   }
 
+  // Shared Web Audio API DynamicsCompressor + Leveling Gain so video narration volume is 100% consistent
+  let videoAudioCtx = null;
+  let videoCompressor = null;
+
+  function routeAudioThroughNormalizer(audioEl) {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      if (!videoAudioCtx) {
+        videoAudioCtx = new AudioCtx();
+        videoCompressor = videoAudioCtx.createDynamicsCompressor();
+        videoCompressor.threshold.value = -20;
+        videoCompressor.knee.value = 12;
+        videoCompressor.ratio.value = 4;
+        videoCompressor.attack.value = 0.005;
+        videoCompressor.release.value = 0.15;
+
+        const makeupGain = videoAudioCtx.createGain();
+        makeupGain.gain.value = 1.08;
+        videoCompressor.connect(makeupGain);
+        makeupGain.connect(videoAudioCtx.destination);
+      }
+      if (videoAudioCtx.state === 'suspended') {
+        videoAudioCtx.resume().catch(() => {});
+      }
+      const sourceNode = videoAudioCtx.createMediaElementSource(audioEl);
+      sourceNode.connect(videoCompressor);
+    } catch (_) {
+      // Server-side PCM16 RMS normalization is already applied to the WAV buffer
+    }
+  }
+
   async function playScene(idx) {
     if (isDestroyed) return;
     stopCurrentAudio();
@@ -316,9 +408,11 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     if (audioUrl) {
       const activeRate = Math.max(0.75, Math.min(1.5, Number(getPlaybackRate()) || 1.1));
       const audio = new Audio(audioUrl);
+      audio.volume = 1.0;
       audio.defaultPlaybackRate = activeRate;
       audio.playbackRate = activeRate;
       audio.preservesPitch = true;
+      routeAudioThroughNormalizer(audio);
       currentAudio = audio;
 
       audio.onloadedmetadata = () => {
@@ -407,11 +501,16 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     const introAlpha = Math.min(1, elapsed / 300);
 
     // 1. Clean Dark Presentation Backdrop
+    // 1. Clean Dark Presentation Backdrop + Inset Frame Border
     const bgGrad = ctx.createLinearGradient(0, 0, W, H);
     bgGrad.addColorStop(0, '#090e1a');
     bgGrad.addColorStop(1, '#0f172a');
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, W, H);
+
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.18)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(1, 1, W - 2, H - 2);
 
     // 2. Top Step Screen Header Bar
     ctx.save();
@@ -428,11 +527,11 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     ctx.font = '700 10.5px "Google Sans", Inter, sans-serif';
     ctx.fillText(`STEP ${currentSceneIdx + 1} OF ${scenes.length}`, 27, 29);
 
-    // Concise Step Heading
+    // Concise Step Heading (strictly bounded within W - 130 so it never overflows the right edge)
     ctx.fillStyle = '#f8fafc';
-    ctx.font = '600 14px "Google Sans", Inter, sans-serif';
+    ctx.font = '600 13.5px "Google Sans", Inter, sans-serif';
     const rawHeading = String(scene.heading || `Step ${currentSceneIdx + 1}`).replace(/^Step\s+\d+\s*:\s*/i, '').replace(/\$/g, '');
-    ctx.fillText(rawHeading, 112, 29);
+    ctx.fillText(rawHeading, 112, 29, W - 130);
 
     // Subtle divider line
     ctx.strokeStyle = 'rgba(148, 163, 184, 0.2)';
@@ -446,26 +545,31 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     const graphExprStr = String(scene.graphExpr || '').trim();
     const hasGraph = Boolean(graphExprStr && !/^(none|null|false|n\/a)$/i.test(graphExprStr));
 
-    // Position the single-step content overlay (Left side if graph is shown, otherwise full width)
-    slideContentOverlay.style.left = '18px';
-    slideContentOverlay.style.top = '54px';
-    slideContentOverlay.style.width = hasGraph ? '382px' : `${W - 36}px`;
-    slideContentOverlay.style.height = `${H - 68}px`;
+    // Percentage-based positioning keeps `slideContentOverlay` strictly inside the canvas at all widths
+    slideContentOverlay.style.left = '2.75%';
+    slideContentOverlay.style.top = '16.5%';
+    slideContentOverlay.style.width = hasGraph ? '54.5%' : '94.5%';
+    slideContentOverlay.style.height = '78.5%';
     slideContentOverlay.style.opacity = String(introAlpha);
 
-    // 3. Right-Side Coordinate Graph Panel (Stationary Key Points ONLY — No Moving Dots!)
+    // 3. Right-Side Coordinate Graph Panel (Strictly Clipped & Stationary Key Points ONLY)
     if (hasGraph) {
-      const gx0 = 414;
+      const gx0 = 392;
       const gy0 = 54;
       const gw = W - gx0 - 18;
       const gh = H - 70;
 
       ctx.save();
       ctx.fillStyle = 'rgba(11, 17, 30, 0.95)';
-      ctx.strokeStyle = 'rgba(148, 163, 184, 0.3)';
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.32)';
       ctx.lineWidth = 1.2;
       ctx.fillRect(gx0, gy0, gw, gh);
       ctx.strokeRect(gx0, gy0, gw, gh);
+
+      // Strictly clip all grid lines, axes, curves, and point labels to the interior of the graph box!
+      ctx.beginPath();
+      ctx.rect(gx0 + 2, gy0 + 2, gw - 4, gh - 4);
+      ctx.clip();
 
       const xMin = Array.isArray(storyboard.xDomain) ? Number(storyboard.xDomain[0]) : -5;
       const xMax = Array.isArray(storyboard.xDomain) ? Number(storyboard.xDomain[1]) : 5;

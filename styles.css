@@ -1356,53 +1356,105 @@ input[type="range"] {
   font-size: 11px;
 }
 
-/* SINGLE-STEP CONCISE SLIDE CONTENT OVERLAY (ZERO SCROLLBARS) */
+/* SINGLE-STEP CONCISE SLIDE CONTENT OVERLAY (ZERO SCROLLBARS, STRICTLY INSIDE CANVAS SAFE ZONE) */
 .manim-slide-content {
   position: absolute;
+  left: 2.75%;
+  top: 16.5%;
+  width: 94.5%;
+  height: 78.5%;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 10px;
+  align-items: stretch;
   overflow: hidden;
   pointer-events: none;
+  box-sizing: border-box;
+  padding: 2px;
+}
+
+.manim-slide-inner {
+  width: 100%;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  box-sizing: border-box;
+  transform-origin: center center;
 }
 
 .manim-rule-pill {
   align-self: flex-start;
+  max-width: 100%;
   background: rgba(250, 204, 21, 0.14);
   border: 1px solid rgba(250, 204, 21, 0.45);
   color: #fde047;
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 600;
-  padding: 3px 10px;
+  padding: 2px 9px;
   border-radius: 999px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .manim-slide-math-card {
+  width: 100%;
+  max-width: 100%;
   background: rgba(15, 23, 42, 0.94);
   border: 1.5px solid rgba(56, 189, 248, 0.55);
-  border-radius: 10px;
-  padding: 12px 14px;
+  border-radius: 9px;
+  padding: 9px 12px;
   color: #ffffff;
-  font-size: 16px;
+  font-size: 14.5px;
   text-align: center;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  box-sizing: border-box;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.manim-math-fit-inner {
+  display: inline-block;
+  white-space: nowrap;
+  transform-origin: center center;
 }
 
 .manim-slide-key-cue {
+  width: 100%;
+  max-width: 100%;
   background: rgba(20, 30, 48, 0.9);
+  border: 1px solid rgba(129, 201, 149, 0.3);
   border-left: 3px solid var(--accent-green);
   border-radius: 6px;
-  padding: 7px 11px;
+  padding: 6px 10px;
   color: #bbf7d0;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 500;
+  box-sizing: border-box;
 }
 
 .stem-info-table.video-slide-table {
   margin: 0;
+  width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
+  box-sizing: border-box;
   background: rgba(15, 23, 42, 0.94);
-  border: 1px solid rgba(148, 163, 184, 0.3);
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  font-size: 11px;
+}
+
+.stem-info-table.video-slide-table th,
+.stem-info-table.video-slide-table td {
+  padding: 4px 7px;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  box-sizing: border-box;
 }
 
 .manim-left-ctrls {

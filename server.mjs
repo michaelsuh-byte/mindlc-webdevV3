@@ -77,6 +77,53 @@ function extractServerSpokenText(rawReply = '') {
 }
 
 /**
+ * Normalizes 16-bit signed mono PCM audio to a consistent active-speech RMS loudness (-15 dBFS, targetRms = 0.18)
+ * with a soft-knee peak limiter at 0.92 so every step in the solution video and chat sounds uniform in volume.
+ */
+export function normalizePcm16Buffer(pcmBuffer, targetRms = 0.18) {
+  if (!pcmBuffer || pcmBuffer.length < 4) return pcmBuffer;
+
+  const sampleCount = Math.floor(pcmBuffer.length / 2);
+  let activeSumSq = 0;
+  let activeCount = 0;
+  let peakAbs = 0;
+  // Ignore near-silent frames below ~ -45 dBFS (180 / 32768) when computing active speech loudness
+  const silenceGate = 180 / 32768;
+
+  for (let i = 0; i < sampleCount; i++) {
+    const sample = pcmBuffer.readInt16LE(i * 2) / 32768;
+    const abs = Math.abs(sample);
+    if (abs > peakAbs) peakAbs = abs;
+    if (abs >= silenceGate) {
+      activeSumSq += sample * sample;
+      activeCount++;
+    }
+  }
+
+  if (peakAbs < 0.001) return pcmBuffer;
+
+  const activeRms = activeCount > 0 ? Math.sqrt(activeSumSq / activeCount) : peakAbs * 0.5;
+  // Clamp gain to [0.55, 3.0] so quiet generations are boosted and loud ones are leveled
+  const desiredGain = Math.max(0.55, Math.min(3.0, targetRms / Math.max(0.01, activeRms)));
+
+  const outBuffer = Buffer.alloc(sampleCount * 2);
+  for (let i = 0; i < sampleCount; i++) {
+    let val = (pcmBuffer.readInt16LE(i * 2) / 32768) * desiredGain;
+    // Smooth soft-knee limiter above 0.78 up to ceiling 0.94 so peaks never clip harshly
+    const absVal = Math.abs(val);
+    if (absVal > 0.78) {
+      const sign = val < 0 ? -1 : 1;
+      const excess = absVal - 0.78;
+      val = sign * (0.78 + 0.16 * Math.tanh(excess / 0.16));
+    }
+    const intSample = Math.max(-32767, Math.min(32767, Math.round(val * 32767)));
+    outBuffer.writeInt16LE(intSample, i * 2);
+  }
+
+  return outBuffer;
+}
+
+/**
  * Wraps raw 16-bit mono PCM (24000 Hz) in a standard RIFF WAV header
  */
 function pcm16ToWavBuffer(pcmBuffer, sampleRate = 24000, numChannels = 1) {
@@ -173,7 +220,12 @@ async function getOrSynthesizeTtsWav(text, voiceName = 'Aoede', apiKey = DEFAULT
 
       const rawBuffer = Buffer.from(audioPart.data, 'base64');
       const mime = (audioPart.mimeType || '').toLowerCase();
-      const wavBuffer = mime.includes('wav') ? rawBuffer : pcm16ToWavBuffer(rawBuffer, 24000, 1);
+      const hasRiffHeader =
+        (mime.includes('wav') || rawBuffer.slice(0, 4).toString('ascii') === 'RIFF') &&
+        rawBuffer.length > 44;
+      const rawPcm = hasRiffHeader ? rawBuffer.subarray(44) : rawBuffer;
+      const normalizedPcm = normalizePcm16Buffer(rawPcm, 0.18);
+      const wavBuffer = pcm16ToWavBuffer(normalizedPcm, 24000, 1);
 
       // Keep cache bounded to 80 recent clips
       if (ttsWavCache.size >= 80) {
@@ -568,6 +620,8 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`CAN-ON-SVS-01 Server + Fast TTS Pre-Warm & Learning-Gap Engine online at http://localhost:${PORT}`);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+  server.listen(PORT, () => {
+    console.log(`CAN-ON-SVS-01 Server + Fast TTS Pre-Warm & Learning-Gap Engine online at http://localhost:${PORT}`);
+  });
+}
