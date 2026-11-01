@@ -11,6 +11,7 @@ import {
   generateContextualCheckIn,
   generateFallbackLearningGapAnalysis,
   generateStage2ConceptOffer,
+  generateNextQuestionPrompt,
   generateOfflineSocraticResponse,
   buildSystemInstruction
 } from './svs-engine.js';
@@ -146,4 +147,11 @@ assert.equal(testAvionics.customRateMultiplier, 1.1, 'Default speaking speed is 
 assert.equal(typeof testAvionics.speakBrowserFallback, 'undefined', 'Generic browser speechSynthesis fallback is completely removed');
 assert.equal(testAvionics.getSelectedNeuralVoiceName('CHARLIE'), 'Aoede', 'Default voice is Aoede');
 
-console.log('ALL SECTION 15 MICRO-DIAGNOSTIC, TWO-STAGE TIMER (15s), LEARNING-GAP ANALYZER, AND AOEDE 1.1X VOICE TESTS PASSED.');
+// 13. Verify Post-Video Varied Next-Question Prompts (`generateNextQuestionPrompt`)
+const nextQ1 = generateNextQuestionPrompt('Step-by-Step Solution: Quadratic Roots');
+const nextQ2 = generateNextQuestionPrompt('Step-by-Step Solution: Quadratic Roots');
+const nextQ3 = generateNextQuestionPrompt('Step-by-Step Solution: Quadratic Roots');
+assert.notEqual(nextQ1, nextQ2, 'Post-video follow-up prompts vary to avoid repetition');
+assert.notEqual(nextQ2, nextQ3, 'Post-video follow-up prompts continue rotating');
+
+console.log('ALL SECTION 15 MICRO-DIAGNOSTIC, TWO-STAGE TIMER (15s), LEARNING-GAP ANALYZER, AND POST-VIDEO COMPLETION TESTS PASSED.');

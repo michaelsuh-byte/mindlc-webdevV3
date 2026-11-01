@@ -9,13 +9,18 @@
  */
 
 import { compileMathExpression, findCurveFeatures } from './graph-engine.js';
-import { sanitizeLatexForHud } from './svs-engine.js';
+import { sanitizeLatexForHud, sanitizeForSpeech } from './svs-engine.js';
 
 export function createManimVideoElement(storyboard = {}, options = {}) {
   const voiceName = options.voiceName || 'Aoede';
-  const playbackRate = options.playbackRate || 1.1;
+  const basePlaybackRate = options.playbackRate || 1.1;
+  const getPlaybackRate =
+    typeof options.getPlaybackRate === 'function'
+      ? options.getPlaybackRate
+      : () => basePlaybackRate;
   const apiKey = options.apiKey || '';
   const onPlaybackStateChange = options.onPlaybackStateChange || (() => {});
+  const onVideoComplete = options.onVideoComplete || (() => {});
 
   const title = String(storyboard.title || 'Step-by-Step Solution').replace(/\$/g, '');
   const course = String(storyboard.course || 'Ontario Secondary STEM').replace(/\$/g, '');
@@ -139,6 +144,7 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
   let currentSceneIdx = 0;
   let isPlaying = true;
   let isDestroyed = false;
+  let initialCompletionFired = false;
   let sceneStartTimestamp = performance.now();
   let sceneDurationMs = 7500;
   let currentAudio = null;
@@ -243,7 +249,9 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     if (audioCache.has(sceneIdx)) {
       return audioCache.get(sceneIdx);
     }
-    const narration = String(scenes[sceneIdx]?.narration || '').replace(/\$/g, '').trim();
+    const rawNarration = String(scenes[sceneIdx]?.narration || '').replace(/\$/g, '').trim();
+    const speechAudit = sanitizeForSpeech(rawNarration, 45);
+    const narration = (speechAudit && typeof speechAudit === 'object' ? speechAudit.cleanText : speechAudit) || rawNarration;
     if (!narration) return null;
 
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -306,8 +314,11 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     if (isDestroyed || !isPlaying) return;
 
     if (audioUrl) {
+      const activeRate = Math.max(0.75, Math.min(1.5, Number(getPlaybackRate()) || 1.1));
       const audio = new Audio(audioUrl);
-      audio.playbackRate = Math.max(0.85, Math.min(1.25, playbackRate));
+      audio.defaultPlaybackRate = activeRate;
+      audio.playbackRate = activeRate;
+      audio.preservesPitch = true;
       currentAudio = audio;
 
       audio.onloadedmetadata = () => {
@@ -317,6 +328,8 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
       };
 
       audio.onplay = () => {
+        const latestRate = Math.max(0.75, Math.min(1.5, Number(getPlaybackRate()) || 1.1));
+        audio.playbackRate = latestRate;
         sceneStartTimestamp = performance.now();
         statusLabel.textContent = `Step ${currentSceneIdx + 1} of ${scenes.length} • Playing`;
       };
@@ -350,6 +363,10 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
       btnPlayPause.textContent = '▶ Play';
       statusLabel.textContent = 'Solution Complete • Click Replay to watch again';
       onPlaybackStateChange(false);
+      if (!initialCompletionFired) {
+        initialCompletionFired = true;
+        onVideoComplete(storyboard);
+      }
     }
   }
 
@@ -584,6 +601,13 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
       isPlaying = false;
       stopCurrentAudio();
       onPlaybackStateChange(false);
+    },
+    setPlaybackRate: (newRate) => {
+      if (currentAudio) {
+        const clamped = Math.max(0.75, Math.min(1.5, Number(newRate) || 1.1));
+        currentAudio.defaultPlaybackRate = clamped;
+        currentAudio.playbackRate = clamped;
+      }
     },
     playScene
   };

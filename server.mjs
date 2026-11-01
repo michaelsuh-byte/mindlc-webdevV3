@@ -384,7 +384,7 @@ CRITICAL UX & PEDAGOGICAL REQUIREMENTS:
    - "latex": Single clean LaTeX equation for this step WITHOUT any $ signs
    - "table": When helpful to organize coefficients, factor pairs, intervals, sign charts, or roots/intercepts, provide a compact table object: {"headers": ["Col 1", "Col 2", "Col 3"], "rows": [["...", "...", "..."]]} with at most 3 rows and short cell values. Otherwise set "table": null.
    - "annotation": Short 1-line visual takeaway (under 12 words) if no table is used.
-5. "narration": Detailed, articulate spoken explanation (2 to 3 complete sentences, 30-45 words) spoken by the voice engine explaining the concept and step in depth (plain spoken English only, no $ signs or raw LaTeX).
+5. "narration": Clear, naturally paced spoken explanation (2 concise sentences, 18 to 28 words, matching the calm conversational cadence of the chat tutor) explaining the concept and step in plain spoken English (no $ signs or raw LaTeX).
 6. "graphExpr": Valid JS math expression in x to plot (e.g. "2*x^2 + 5*x + 2"), or "" if non-graphical.
 7. "highlightPoint": Stationary key point [x, y] to highlight on the graph for this step (e.g. [-0.5, 0] or [0, 2]), or null.
 

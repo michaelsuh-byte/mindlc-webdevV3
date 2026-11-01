@@ -523,11 +523,17 @@ export class AudioAvionicsController {
       this.currentAudioUrl = audioUrl;
 
       await new Promise((resolve, reject) => {
+        const activeRate = Math.max(0.75, Math.min(1.5, Number(this.customRateMultiplier) || 1.1));
         const audio = new Audio(audioUrl);
-        audio.playbackRate = Math.max(0.75, Math.min(1.5, this.customRateMultiplier || 1.1));
+        audio.defaultPlaybackRate = activeRate;
+        audio.playbackRate = activeRate;
+        audio.preservesPitch = true;
         this.currentAudioEl = audio;
 
         audio.onplay = () => {
+          const latestRate = Math.max(0.75, Math.min(1.5, Number(this.customRateMultiplier) || 1.1));
+          audio.defaultPlaybackRate = latestRate;
+          audio.playbackRate = latestRate;
           this.onTtfaMeasured(Math.round(performance.now() - startTs));
           this.isBotSpeaking = true;
           this.engageSpeakerEchoLock();

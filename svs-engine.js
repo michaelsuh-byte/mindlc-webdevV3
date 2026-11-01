@@ -525,8 +525,37 @@ export function generateStage2ConceptOffer({
     hudLatex: sanitizeLatexForHud(lastHudLatex || ''),
     telemetry,
     spokenText: activeGap.stage2OfferSpoken,
+    missingConcept: activeGap.missingConcept,
     gapAnalysis: activeGap
   };
+}
+
+let lastNextQuestionPromptIndex = -1;
+
+/**
+ * Generates a varied, natural follow-up prompt after a question session or solution video finishes playing
+ * so the chatbot recognizes the question is complete and asks what other questions the student has without repeating itself.
+ */
+export function generateNextQuestionPrompt(topicTitle = '') {
+  const cleanTitle = String(topicTitle || '')
+    .replace(/^Step-by-Step\s+Solution\s*:\s*/i, '')
+    .replace(/\$/g, '')
+    .trim();
+
+  const prompts = [
+    cleanTitle
+      ? `That wraps up our complete solution for ${cleanTitle}! What other questions do you have, or what problem would you like to try next?`
+      : 'That wraps up our complete step-by-step solution! What other questions do you have, or what problem would you like to try next?',
+    'We have finished working through this question from start to finish. What other STEM question or topic can we explore together next?',
+    'I hope that step-by-step breakdown made everything crystal clear! Do you have any follow-up questions on this, or what new problem should we tackle?',
+    'Nice work seeing that problem all the way through! What other questions are on your mind today?',
+    'That completes our walkthrough for this question. Whenever you are ready, what next question or concept would you like to work on?',
+    'Everything for this problem is complete! What other math or science question would you like to solve next?'
+  ];
+
+  const idx = (lastNextQuestionPromptIndex + 1) % prompts.length;
+  lastNextQuestionPromptIndex = idx;
+  return prompts[idx];
 }
 
 /**

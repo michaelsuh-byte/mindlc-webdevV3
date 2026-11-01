@@ -27,6 +27,7 @@ import {
   generateContextualCheckIn,
   generateFallbackLearningGapAnalysis,
   generateStage2ConceptOffer,
+  generateNextQuestionPrompt,
   detectSystemCommand,
   generateOfflineSocraticResponse
 } from './svs-engine.js';
@@ -280,6 +281,13 @@ class SocraticGeminiChatApp {
     rateSlider.addEventListener('input', () => {
       const val = Number(rateSlider.value);
       this.avionics.customRateMultiplier = val;
+      if (this.avionics.currentAudioEl) {
+        this.avionics.currentAudioEl.defaultPlaybackRate = val;
+        this.avionics.currentAudioEl.playbackRate = val;
+      }
+      if (this.activeManimController?.setPlaybackRate) {
+        this.activeManimController.setPlaybackRate(val);
+      }
       document.getElementById('rateValue').textContent = `${val.toFixed(2)}×`;
     });
 
@@ -385,9 +393,32 @@ class SocraticGeminiChatApp {
   }
 
   /**
+   * Stops the deliberation timer and marks the current question session as complete
+   * so the timer never triggers 'Take your time...' while offering/playing the video or waiting for the next question.
+   */
+  markQuestionSessionCompleted(statusText = 'Session Complete') {
+    this.stopScratchpadDeliberationClock();
+    this.hasActiveProblemTurn = false;
+    this.delibStage = 2;
+    this.awaitingConceptConsent = false;
+    this.isTimerPaused = false;
+    this.pausedElapsedSec = 0;
+
+    const timerEl = document.getElementById('stripScratchpadTimer');
+    const fillEl = document.getElementById('stripScratchpadFill');
+    if (timerEl) {
+      timerEl.textContent = statusText;
+    }
+    if (fillEl) {
+      fillEl.style.width = '0%';
+    }
+  }
+
+  /**
    * Explicitly ends the current question session and asks the user if they want a step-by-step solution video
    */
   offerEndOfSessionManimVideo() {
+    this.markQuestionSessionCompleted('Session Complete');
     this.awaitingManimConsent = true;
     const spoken =
       'Great work completing this problem! Would you like to watch a full step-by-step solution video with voice explanation for the question we just solved?';
@@ -410,21 +441,28 @@ class SocraticGeminiChatApp {
    */
   async handleManimConsentDecision(decision) {
     this.awaitingManimConsent = false;
+    this.markQuestionSessionCompleted(
+      decision === 'NO' ? 'Ready for Next Question' : 'Playing Solution Video'
+    );
+
     const profile = VOCAL_PROFILES[this.activeProfileKey];
     const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
 
     if (decision === 'NO') {
-      const noReply = 'No problem at all! Let me know what STEM question or topic you would like to explore next.';
+      const noReply = generateNextQuestionPrompt();
       this.appendChatMessage(
         'svs',
         noReply,
-        `${profile.code} (${voiceName}) • Session Complete`,
+        `${profile.code} (${voiceName}) • Ready for Next Question`,
         ''
       );
       this.lastSpokenBurst = noReply;
       this.avionics.speakCalibratedBurst(noReply, this.activeProfileKey);
       return;
     }
+
+    // Stop any current speech before generating and playing the video
+    this.avionics.stopSpeaking('START_SOLUTION_VIDEO');
 
     // User chose YES -> Generate Step-by-Step Solution Storyboard and render Video Player in chat
     const loadingRow = this.appendThinkingBubble(
@@ -435,6 +473,7 @@ class SocraticGeminiChatApp {
       const storyboard = await this.fetchManimStoryboard();
       loadingRow.remove();
 
+      this.markQuestionSessionCompleted('Playing Solution Video');
       const introText = `Here is the complete step-by-step solution for "${storyboard.title}". Use the Step buttons below the screen to review any part at your own pace.`;
       this.appendChatMessage(
         'svs',
@@ -446,6 +485,7 @@ class SocraticGeminiChatApp {
     } catch (err) {
       loadingRow.remove();
       console.warn('Solution video generation fallback:', err);
+      this.markQuestionSessionCompleted('Playing Solution Video');
       const fallbackStoryboard = this.buildClientFallbackManimStoryboard();
       this.appendChatMessage(
         'svs',
@@ -457,11 +497,33 @@ class SocraticGeminiChatApp {
     }
   }
 
+  /**
+   * Called automatically once the step-by-step solution video finishes playing in the chat window.
+   * Recognizes the question is complete, keeps the deliberation timer stopped, and asks a varied follow-up question.
+   */
+  handleSolutionVideoCompleted(completedStoryboard = {}) {
+    this.markQuestionSessionCompleted('Ready for Next Question');
+
+    const followUpPrompt = generateNextQuestionPrompt(completedStoryboard?.title || '');
+    const profile = VOCAL_PROFILES[this.activeProfileKey];
+    const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
+
+    this.appendChatMessage(
+      'svs',
+      followUpPrompt,
+      `${profile.code} (${voiceName}) • Question Complete`,
+      ''
+    );
+    this.lastSpokenBurst = followUpPrompt;
+    this.avionics.speakCalibratedBurst(followUpPrompt, this.activeProfileKey);
+  }
+
   async fetchManimStoryboard() {
     const topicHint =
       this.lastStudentUtterance ||
       this.lastHudLatex ||
       'Ontario Secondary STEM Problem Walkthrough';
+    const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
 
     const res = await fetch('/api/manim-script', {
       method: 'POST',
@@ -469,6 +531,7 @@ class SocraticGeminiChatApp {
       body: JSON.stringify({
         history: this.conversationHistory,
         topicHint,
+        voiceName,
         apiKey: this.geminiApiKey || undefined
       })
     });
@@ -1150,14 +1213,16 @@ class SocraticGeminiChatApp {
     }
 
     // Detect if this turn completes the explanation of a question ("a session")
-    const spokenMentionsManim = /\b(manim|instructional\s+video)\b/i.test(packet.spokenText || '');
+    const spokenMentionsManim = /\b(manim|instructional\s+video|solution\s+video)\b/i.test(packet.spokenText || '');
     const isSessionComplete = Boolean(packet.telemetry.session_complete || spokenMentionsManim);
-    if (isSessionComplete) {
-      this.awaitingManimConsent = true;
-    }
 
     this.currentTelemetry = packet.telemetry;
     this.updateTelemetryUI(this.currentTelemetry);
+
+    if (isSessionComplete) {
+      this.awaitingManimConsent = true;
+      this.markQuestionSessionCompleted('Session Complete');
+    }
 
     const profile = VOCAL_PROFILES[this.activeProfileKey];
     const mode = FLIGHT_MODES[this.activeModeId];
@@ -1461,9 +1526,13 @@ class SocraticGeminiChatApp {
       const manimWidget = createManimVideoElement(attachments.manimStoryboard, {
         voiceName,
         playbackRate,
+        getPlaybackRate: () => this.avionics.customRateMultiplier || 1.1,
         apiKey: this.geminiApiKey,
         onPlaybackStateChange: (playing) => {
           this.avionics.setBotSpeakingState(playing);
+        },
+        onVideoComplete: (completedStoryboard) => {
+          this.handleSolutionVideoCompleted(completedStoryboard);
         }
       });
 
