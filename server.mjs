@@ -2,6 +2,11 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  parseTriChannelPacket,
+  sanitizeForSpeech,
+  splitSpokenTextIntoClauses
+} from './svs-engine.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 4173;
@@ -16,15 +21,39 @@ const MIME_TYPES = {
 };
 
 /**
- * In-memory TTS WAV cache & in-flight deduplication map.
- * Allows `/api/chat` and `/api/manim-script` to pre-warm TTS synthesis in the background
- * the millisecond text is generated, eliminating multi-second voice startup lag!
+ * In-memory TTS WAV cache, in-flight deduplication map, and 2-slot concurrency limiter.
+ * Allows Clause 1 and Clause 2 of a turn to synthesize in parallel while preventing HTTP 429 burst errors.
  */
 const ttsWavCache = new Map();
 const inFlightTtsMap = new Map();
-let ttsQueuePromise = Promise.resolve();
+const MAX_CONCURRENT_TTS = 2;
+let activeTtsCount = 0;
+const ttsWaiters = [];
+
+function acquireTtsSlot() {
+  if (activeTtsCount < MAX_CONCURRENT_TTS) {
+    activeTtsCount++;
+    return Promise.resolve();
+  }
+  return new Promise(resolve => {
+    ttsWaiters.push(resolve);
+  });
+}
+
+function releaseTtsSlot() {
+  if (ttsWaiters.length > 0) {
+    const next = ttsWaiters.shift();
+    next();
+  } else {
+    activeTtsCount = Math.max(0, activeTtsCount - 1);
+  }
+}
 
 function normalizeTtsText(text = '') {
+  const audit = sanitizeForSpeech(String(text || ''), 60);
+  if (audit && audit.cleanText) {
+    return audit.cleanText;
+  }
   return String(text || '')
     .replace(/<hud>[\s\S]*?<\/hud>/gi, ' ')
     .replace(/<graph>[\s\S]*?<\/graph>/gi, ' ')
@@ -94,16 +123,8 @@ async function getOrSynthesizeTtsWav(text, voiceName = 'Aoede', apiKey = DEFAULT
   }
 
   const synthPromise = (async () => {
-    // Queue TTS requests so simultaneous calls never collide or hit rate limits
-    const prevJob = ttsQueuePromise;
-    let releaseQueue;
-    ttsQueuePromise = new Promise(resolve => {
-      releaseQueue = resolve;
-    });
-
+    await acquireTtsSlot();
     try {
-      await prevJob.catch(() => {});
-
       const modelName = 'gemini-2.5-flash-preview-tts';
       let audioPart = null;
       let lastErr = null;
@@ -162,7 +183,7 @@ async function getOrSynthesizeTtsWav(text, voiceName = 'Aoede', apiKey = DEFAULT
       ttsWavCache.set(key, wavBuffer);
       return wavBuffer;
     } finally {
-      releaseQueue();
+      releaseTtsSlot();
     }
   })();
 
@@ -216,7 +237,7 @@ async function handleChatApi(req, res) {
       return;
     }
 
-    const { systemInstruction, history = [], message, voiceName = 'Aoede' } = body;
+    const { systemInstruction, history = [], message, voiceName = 'Aoede', maxWords = 30 } = body;
     const contents = [];
 
     for (const turn of history.slice(-14)) {
@@ -255,11 +276,40 @@ async function handleChatApi(req, res) {
 
     const replyText = data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join(' ').trim() || '';
 
-    // Kick off background TTS synthesis immediately on the server so when client requests /api/tts it is already hot!
-    prewarmSpokenTextTts(replyText, voiceName, apiKey);
+    // Option 4: Split into [shortFirstClause, remainder] using exact `sanitizeForSpeech` rules,
+    // bundle `firstChunkWavBase64` directly inside `/api/chat` (so voice starts at 0.0s when text appears),
+    // and synthesize `audioChunks[1]` in parallel in the background!
+    const parsed = parseTriChannelPacket(replyText, Number(maxWords) || 30);
+    const audioChunks = splitSpokenTextIntoClauses(parsed.spokenText, Number(maxWords) || 30);
+    let firstChunkWavBase64 = null;
+
+    if (audioChunks.length > 0) {
+      const chunk0Promise = getOrSynthesizeTtsWav(audioChunks[0], voiceName, apiKey);
+      if (audioChunks.length > 1) {
+        getOrSynthesizeTtsWav(audioChunks[1], voiceName, apiKey).catch(() => {});
+      }
+
+      try {
+        const wavBuf = await Promise.race([
+          chunk0Promise,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('PREWARM_TIMEOUT')), 1750))
+        ]);
+        if (wavBuf) {
+          firstChunkWavBase64 = wavBuf.toString('base64');
+        }
+      } catch (_) {
+        // If chunk 0 takes slightly longer than 1.75s, it remains in `inFlightTtsMap` so `/api/tts` awaits the rest of it
+      }
+    }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ reply: replyText }));
+    res.end(
+      JSON.stringify({
+        reply: replyText,
+        audioChunks,
+        firstChunkWavBase64
+      })
+    );
   } catch (err) {
     console.error('/api/chat error:', err.message);
     res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -385,8 +435,8 @@ CRITICAL UX & PEDAGOGICAL REQUIREMENTS:
    - "table": When helpful to organize coefficients, factor pairs, intervals, sign charts, or roots/intercepts, provide a compact table object: {"headers": ["Col 1", "Col 2", "Col 3"], "rows": [["...", "...", "..."]]} with at most 3 rows and short cell values. Otherwise set "table": null.
    - "annotation": Short 1-line visual takeaway (under 12 words) if no table is used.
 5. "narration": Clear, naturally paced spoken explanation (2 concise sentences, 18 to 28 words, matching the calm conversational cadence of the chat tutor) explaining the concept and step in plain spoken English (no $ signs or raw LaTeX).
-6. "graphExpr": Valid JS math expression in x to plot (e.g. "2*x^2 + 5*x + 2"), or "" if non-graphical.
-7. "highlightPoint": Stationary key point [x, y] to highlight on the graph for this step (e.g. [-0.5, 0] or [0, 2]), or null.
+6. "graphExpr": Set to "" (empty string) by default! Do NOT include a graph on every step or for every problem. ONLY provide a valid JS math expression in x (e.g. "2*x^2 + 5*x + 2") on a specific step when a graph is strictly needed or directly benefits the student's visual understanding of that step (such as visually verifying roots/intercepts on the final step, or when the problem is explicitly about graphing). For algebraic manipulations, coefficient identification, factoring steps, kinematics formulas, or stoichiometry, leave "graphExpr": "" so the step screen focuses cleanly on the equation and table.
+7. "highlightPoint": Stationary key point [x, y] to highlight on the graph ONLY when "graphExpr" is non-empty for that step (e.g. [-0.5, 0]); otherwise set to null.
 
 Return ONLY valid JSON matching this schema:
 {

@@ -572,8 +572,8 @@ class SocraticGeminiChatApp {
             ]
           },
           narration: 'We begin our formal solution by writing the quadratic equation in standard form and identifying its exact coefficients: leading coefficient a equals two, linear coefficient b equals five, and constant c equals two.',
-          graphExpr: fnExpr,
-          highlightPoint: [0, 2]
+          graphExpr: '',
+          highlightPoint: null
         },
         {
           heading: 'Step 2: Product-Sum Decomposition',
@@ -587,8 +587,8 @@ class SocraticGeminiChatApp {
             ]
           },
           narration: 'By the decomposition method, we multiply the leading coefficient a by the constant c to obtain four. Testing factor pairs in our table, four and one multiply to positive four and sum to positive five.',
-          graphExpr: fnExpr,
-          highlightPoint: [-1.25, -1.125]
+          graphExpr: '',
+          highlightPoint: null
         },
         {
           heading: 'Step 3: Splitting the Linear Term & Grouping',
@@ -596,8 +596,8 @@ class SocraticGeminiChatApp {
           latex: '2x^2 + 4x + x + 2 = 0 \\implies 2x(x + 2) + 1(x + 2) = 0',
           annotation: 'Shared binomial factor (x + 2) appears in both grouped terms.',
           narration: 'Next, we rewrite the middle term five x as four x plus one x. Factoring by grouping extracts two x from the first pair and positive one from the second pair, revealing the shared binomial factor x plus two.',
-          graphExpr: fnExpr,
-          highlightPoint: [-2, 0]
+          graphExpr: '',
+          highlightPoint: null
         },
         {
           heading: 'Step 4: Zero-Product Property & Verified Roots',
@@ -1090,10 +1090,11 @@ class SocraticGeminiChatApp {
     const thinkingEl = this.appendThinkingBubble();
 
     try {
-      const llmReply = await this.fetchServerGeminiChat(utterance, pauseSeconds);
+      const chatResult = await this.fetchServerGeminiChat(utterance, pauseSeconds);
       thinkingEl.remove();
 
-      if (llmReply) {
+      if (chatResult && chatResult.reply) {
+        const llmReply = chatResult.reply;
         // Parse and sanitize BEFORE storing in history so raw `$` signs never pollute future turns!
         const parsedPacket = parseTriChannelPacket(llmReply, this.maxWords, retroactiveTelemetry);
         const cleanAssistantHistoryText =
@@ -1108,7 +1109,11 @@ class SocraticGeminiChatApp {
         this.emitTriChannelResponse(llmReply, {
           speak: true,
           fallbackTelemetry: retroactiveTelemetry,
-          studentUtterance: utterance
+          studentUtterance: utterance,
+          prewarmedAudio: {
+            audioChunks: chatResult.audioChunks,
+            firstChunkWavBase64: chatResult.firstChunkWavBase64
+          }
         });
         return;
       }
@@ -1162,6 +1167,7 @@ class SocraticGeminiChatApp {
         history: this.conversationHistory,
         message: annotatedMessage,
         voiceName,
+        maxWords: this.maxWords,
         apiKey: this.geminiApiKey || undefined
       })
     });
@@ -1170,7 +1176,12 @@ class SocraticGeminiChatApp {
       throw new Error(`Chat HTTP ${res.status}`);
     }
     const data = await res.json();
-    return data.reply || null;
+    if (!data || !data.reply) return null;
+    return {
+      reply: data.reply,
+      audioChunks: data.audioChunks || [],
+      firstChunkWavBase64: data.firstChunkWavBase64 || null
+    };
   }
 
   appendThinkingBubble(customText = 'Thinking...') {
@@ -1241,7 +1252,11 @@ class SocraticGeminiChatApp {
     if (packet.spokenText) {
       this.lastSpokenBurst = packet.spokenText;
       if (options.speak) {
-        this.avionics.speakCalibratedBurst(packet.spokenText, this.activeProfileKey);
+        this.avionics.speakCalibratedBurst(
+          packet.spokenText,
+          this.activeProfileKey,
+          options.prewarmedAudio || null
+        );
       } else if (this.hasActiveProblemTurn && this.autoScratchpadPing) {
         this.startScratchpadDeliberationClock();
       }

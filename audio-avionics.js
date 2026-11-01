@@ -5,7 +5,7 @@
  *  - Smart Speech Pause Detector Device (prevents long student explanations from being cut off mid-thought)
  */
 
-import { VOCAL_PROFILES, NEURAL_HUMAN_VOICES } from './svs-engine.js';
+import { VOCAL_PROFILES, NEURAL_HUMAN_VOICES, splitSpokenTextIntoClauses } from './svs-engine.js';
 
 /**
  * Detects if the student's current spoken transcript ends mid-clause / mid-equation
@@ -491,16 +491,32 @@ export class AudioAvionicsController {
     throw lastErr || new Error('Neural TTS unavailable');
   }
 
+  base64ToBlobUrl(base64Str, mimeType = 'audio/wav') {
+    const binary = atob(base64Str);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: mimeType });
+    return URL.createObjectURL(blob);
+  }
+
   /**
-   * Speaks the tutor burst using ONLY Studio Neural Human Voice (e.g. Aoede).
-   * NEVER falls back to generic browser/OS robotic speechSynthesis voice!
+   * Option 4 Zero-Delay Voice Emitter:
+   * - Plays pre-bundled `firstChunkWavBase64` from `/api/chat` at 0.0s (instantaneous when transcript appears)
+   *   while streaming `audioChunks[1]` in parallel from the server's pre-warm cache.
+   * - Strictly uses Studio Neural Human Voice (e.g. Aoede); NEVER falls back to generic browser speechSynthesis.
    */
-  async speakCalibratedBurst(cleanText, profileKey = 'CHARLIE') {
+  async speakCalibratedBurst(cleanText, profileKey = 'CHARLIE', prewarmedAudio = null) {
     const startTs = performance.now();
     this.stopSpeaking('NEW_BURST');
 
-    const normalizedText = String(cleanText || '').replace(/\$/g, '').replace(/\s+/g, ' ').trim();
-    if (!normalizedText) return;
+    const chunks =
+      Array.isArray(prewarmedAudio?.audioChunks) && prewarmedAudio.audioChunks.length > 0
+        ? prewarmedAudio.audioChunks
+        : splitSpokenTextIntoClauses(cleanText, this.maxWords);
+
+    if (chunks.length === 0) return;
 
     this.isBotSpeaking = true;
     this.engageSpeakerEchoLock();
@@ -511,40 +527,53 @@ export class AudioAvionicsController {
     this.ttsAbortController = abortCtrl;
 
     try {
-      const audioUrl = await this.fetchTtsBlobUrl(normalizedText, voiceName, abortCtrl.signal);
-      if (abortCtrl.signal.aborted) {
-        URL.revokeObjectURL(audioUrl);
-        return;
-      }
-
-      if (this.currentAudioUrl) {
-        URL.revokeObjectURL(this.currentAudioUrl);
-      }
-      this.currentAudioUrl = audioUrl;
-
-      await new Promise((resolve, reject) => {
-        const activeRate = Math.max(0.75, Math.min(1.5, Number(this.customRateMultiplier) || 1.1));
-        const audio = new Audio(audioUrl);
-        audio.defaultPlaybackRate = activeRate;
-        audio.playbackRate = activeRate;
-        audio.preservesPitch = true;
-        this.currentAudioEl = audio;
-
-        audio.onplay = () => {
-          const latestRate = Math.max(0.75, Math.min(1.5, Number(this.customRateMultiplier) || 1.1));
-          audio.defaultPlaybackRate = latestRate;
-          audio.playbackRate = latestRate;
-          this.onTtfaMeasured(Math.round(performance.now() - startTs));
-          this.isBotSpeaking = true;
-          this.engageSpeakerEchoLock();
-          this.onBotSpeakingChange(true);
-        };
-
-        audio.onended = () => resolve();
-        audio.onerror = (e) => reject(e);
-
-        audio.play().catch(reject);
+      // Prepare URL promises for all chunks in parallel:
+      // Chunk 0 uses inline base64 audio from `/api/chat` when available (0ms network wait!)
+      const urlPromises = chunks.map((chunkText, idx) => {
+        if (idx === 0 && prewarmedAudio?.firstChunkWavBase64) {
+          return Promise.resolve(this.base64ToBlobUrl(prewarmedAudio.firstChunkWavBase64));
+        }
+        return this.fetchTtsBlobUrl(chunkText, voiceName, abortCtrl.signal);
       });
+
+      for (let i = 0; i < urlPromises.length; i++) {
+        const audioUrl = await urlPromises[i];
+        if (abortCtrl.signal.aborted) {
+          URL.revokeObjectURL(audioUrl);
+          return;
+        }
+
+        if (this.currentAudioUrl) {
+          URL.revokeObjectURL(this.currentAudioUrl);
+        }
+        this.currentAudioUrl = audioUrl;
+
+        await new Promise((resolve, reject) => {
+          const activeRate = Math.max(0.75, Math.min(1.5, Number(this.customRateMultiplier) || 1.1));
+          const audio = new Audio(audioUrl);
+          audio.defaultPlaybackRate = activeRate;
+          audio.playbackRate = activeRate;
+          audio.preservesPitch = true;
+          this.currentAudioEl = audio;
+
+          audio.onplay = () => {
+            const latestRate = Math.max(0.75, Math.min(1.5, Number(this.customRateMultiplier) || 1.1));
+            audio.defaultPlaybackRate = latestRate;
+            audio.playbackRate = latestRate;
+            if (i === 0) {
+              this.onTtfaMeasured(Math.round(performance.now() - startTs));
+            }
+            this.isBotSpeaking = true;
+            this.engageSpeakerEchoLock();
+            this.onBotSpeakingChange(true);
+          };
+
+          audio.onended = () => resolve();
+          audio.onerror = (e) => reject(e);
+
+          audio.play().catch(reject);
+        });
+      }
 
       if (!abortCtrl.signal.aborted) {
         this.isBotSpeaking = false;

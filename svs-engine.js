@@ -205,10 +205,12 @@ The system operates simultaneously across decoupled communication channels in a 
 1. \`<hud> ... </hud>\` (STUDENT MATH DISPLAY):
    - Contains ONLY a single clean LaTeX math expression representing the current mathematical state or micro-step delta.
    - IMPORTANT LATEX RULE: Write pure LaTeX inside \`<hud> ... </hud>\` WITHOUT any \`$\` or \`$$\` dollar signs! (Example: \`<hud>2x^2 - 8x = 0</hud>\`).
-2. \`<graph> ... </graph>\` (INTERACTIVE GRAPHING CALCULATOR):
-   - Whenever the student asks to see a graph, plot, curve, parabola, tangent, vertex, intercept, or visual representation of a function, you MUST emit a \`<graph>\` block containing a single-line JSON specification so the interactive graph renders directly in the chat!
-   - Format: \`<graph>{"functions":["2*x^2 - 8*x"],"title":"Graph of f(x) = 2x^2 - 8x","xDomain":[-4,6],"yDomain":[-10,10]}</graph>\`
-   - Do NOT try to just describe a graph verbally when asked for a graph—always emit the \`<graph>\` tag and briefly point out a key feature on the plotted graph!
+2. \`<graph> ... </graph>\` (INTERACTIVE GRAPHING CALCULATOR — SELECTIVE USE ONLY):
+   - Do NOT emit a \`<graph>\` block on every turn or for purely algebraic, arithmetic, physics formula, or chemistry steps where a graph is not needed.
+   - Emit a \`<graph>\` block ONLY when:
+     (a) The student explicitly asks to see a graph, plot, curve, parabola, tangent, vertex, or intercept, OR
+     (b) Visualizing the function curve is strictly needed at this specific step and directly benefits the student's conceptual understanding (e.g., visually connecting algebraic roots to x-intercepts).
+   - Format when needed: \`<graph>{"functions":["2*x^2 - 8*x"],"title":"Graph of f(x) = 2x^2 - 8x","xDomain":[-4,6],"yDomain":[-10,10]}</graph>\`
 2b. \`<table_data> ... </table_data>\` (OPTIONAL STRUCTURED SUMMARY TABLE):
    - When comparing coefficients, factor pairs, domain intervals, sign charts, or key equation properties, you may emit a concise single-line JSON table to enhance visual legibility:
      \`<table_data>{"headers":["Parameter","Value","Meaning"],"rows":[["a","2","Leading coefficient"],["b","-8","Linear coefficient"]]}</table_data>\`
@@ -859,6 +861,43 @@ export function sanitizeForSpeech(rawText, maxWords = 30) {
   audit.finalWordCount = text.split(/\s+/).filter(Boolean).length;
   audit.cleanText = text;
   return audit;
+}
+
+/**
+ * Splits spoken text into [shortFirstClause, remainder] after running `sanitizeForSpeech`.
+ * Keeping the first clause short (3–9 words) allows Gemini Neural TTS to synthesize it in ~0.8s
+ * inside `/api/chat` while the remainder synthesizes in the background—resulting in 0.0s delay
+ * when the transcript appears on screen!
+ */
+export function splitSpokenTextIntoClauses(rawOrCleanText = '', maxWords = 30) {
+  const clean = sanitizeForSpeech(rawOrCleanText, maxWords).cleanText;
+  if (!clean) return [];
+
+  const words = clean.split(/\s+/).filter(Boolean);
+  if (words.length <= 8) {
+    return [clean];
+  }
+
+  // 1. Try splitting at a natural punctuation boundary (., !, ?, :, ;, ,) within the first 3 to 10 words
+  let accWords = [];
+  for (let i = 0; i < Math.min(words.length - 3, 10); i++) {
+    accWords.push(words[i]);
+    if (i >= 2 && /[.!?:;,—]$/.test(words[i])) {
+      const firstClause = accWords.join(' ').trim();
+      const remainder = words.slice(i + 1).join(' ').trim();
+      if (firstClause.length >= 8 && remainder.length >= 4) {
+        return [firstClause, remainder];
+      }
+    }
+  }
+
+  // 2. Otherwise split at the first sentence boundary
+  const sentenceMatch = clean.match(/^([^.!?]+[.!?]+)\s+([\s\S]+)$/);
+  if (sentenceMatch && sentenceMatch[1].trim().length >= 6 && sentenceMatch[2].trim().length >= 4) {
+    return [sentenceMatch[1].trim(), sentenceMatch[2].trim()];
+  }
+
+  return [clean];
 }
 
 export function detectSystemCommand(utterance) {

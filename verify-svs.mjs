@@ -12,6 +12,7 @@ import {
   generateFallbackLearningGapAnalysis,
   generateStage2ConceptOffer,
   generateNextQuestionPrompt,
+  splitSpokenTextIntoClauses,
   generateOfflineSocraticResponse,
   buildSystemInstruction
 } from './svs-engine.js';
@@ -154,4 +155,13 @@ const nextQ3 = generateNextQuestionPrompt('Step-by-Step Solution: Quadratic Root
 assert.notEqual(nextQ1, nextQ2, 'Post-video follow-up prompts vary to avoid repetition');
 assert.notEqual(nextQ2, nextQ3, 'Post-video follow-up prompts continue rotating');
 
-console.log('ALL SECTION 15 MICRO-DIAGNOSTIC, TWO-STAGE TIMER (15s), LEARNING-GAP ANALYZER, AND POST-VIDEO COMPLETION TESTS PASSED.');
+// 14. Verify Option 4 Short First-Clause Splitter (`splitSpokenTextIntoClauses`)
+const clauses = splitSpokenTextIntoClauses(
+  'We can absolutely find that. Just to calibrate our instruments first: what is actually pulling the object down, and what is its acceleration?',
+  30
+);
+assert.equal(clauses.length, 2, 'Splits into short opening clause and remainder');
+assert.equal(clauses[0], 'We can absolutely find that.', 'First clause is short for instant TTS synthesis');
+assert.equal(sysPrompt.includes('SELECTIVE USE ONLY'), true, 'System prompt enforces selective graph usage');
+
+console.log('ALL OPTION 4 ZERO-DELAY VOICE, SELECTIVE GRAPHING, TWO-STAGE TIMER (15s), AND POST-VIDEO TESTS PASSED.');

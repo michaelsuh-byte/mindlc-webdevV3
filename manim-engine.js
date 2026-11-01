@@ -40,8 +40,8 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
             ]
           },
           narration: 'We begin by writing the quadratic equation in standard form, two x squared plus five x plus two equals zero. As shown in the table, the leading coefficient a is two, the linear coefficient b is five, and the constant c is two.',
-          graphExpr: '2*x^2 + 5*x + 2',
-          highlightPoint: [0, 2]
+          graphExpr: '',
+          highlightPoint: null
         },
         {
           heading: 'Step 2: Product-Sum Decomposition',
@@ -55,8 +55,8 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
             ]
           },
           narration: 'To factor by decomposition, we multiply a times c, which gives four. Testing factor pairs of four in our table, four and one multiply to four and add to five.',
-          graphExpr: '2*x^2 + 5*x + 2',
-          highlightPoint: [-1.25, -1.125]
+          graphExpr: '',
+          highlightPoint: null
         },
         {
           heading: 'Step 3: Factoring by Grouping',
@@ -64,8 +64,8 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
           latex: '2x^2 + 4x + x + 2 = 0 \\implies 2x(x + 2) + 1(x + 2) = 0',
           annotation: 'Common binomial factor (x + 2) extracted from both groups.',
           narration: 'Next, we split the middle term five x into four x plus one x. Factoring two x from the first pair and one from the second pair reveals the shared binomial factor x plus two.',
-          graphExpr: '2*x^2 + 5*x + 2',
-          highlightPoint: [-2, 0]
+          graphExpr: '',
+          highlightPoint: null
         },
         {
           heading: 'Step 4: Zero-Product Property & Verified Roots',
@@ -442,8 +442,9 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     ctx.stroke();
     ctx.restore();
 
-    const graphExprStr = String(scene.graphExpr || storyboard.scenes?.[0]?.graphExpr || '').trim();
-    const hasGraph = Boolean(graphExprStr);
+    // Render a graph on this step ONLY when `scene.graphExpr` is explicitly provided for this step
+    const graphExprStr = String(scene.graphExpr || '').trim();
+    const hasGraph = Boolean(graphExprStr && !/^(none|null|false|n\/a)$/i.test(graphExprStr));
 
     // Position the single-step content overlay (Left side if graph is shown, otherwise full width)
     slideContentOverlay.style.left = '18px';
