@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   STEP_TIERS,
+  FLIGHT_MODES,
   sanitizeLatexForHud,
   parseTriChannelPacket,
   isGraphRequestedByUser,
@@ -8,6 +9,7 @@ import {
   detectManimConsentIntent,
   computeRetroactiveAttribution,
   generateContextualCheckIn,
+  generateOfflineSocraticResponse,
   buildSystemInstruction
 } from './svs-engine.js';
 
@@ -81,6 +83,37 @@ assert.notEqual(checkIn1.spokenText, checkIn2.spokenText);
 
 const sysPrompt = buildSystemInstruction('CHARLIE', 1, 30);
 assert.equal(sysPrompt.includes('<graph>'), true, 'System prompt includes <graph> channel instructions');
-assert.equal(sysPrompt.includes('session_complete'), true, 'System prompt includes session_complete Manim video offer rule');
+assert.equal(sysPrompt.includes('session_complete'), true, 'System prompt includes session_complete video offer rule');
+assert.equal(
+  sysPrompt.includes('## 15. COLD-START BASELINE CALIBRATION (MICRO-DIAGNOSTIC PROBING)'),
+  true,
+  'System prompt includes Section 15 Micro-Diagnostic Probing specification'
+);
 
-console.log('ALL GRAPH ENGINE, PAUSE DETECTOR, MANIM VIDEO, AND TRI-CHANNEL TESTS PASSED.');
+// 8. Verify Mode-Adapted Diagnostic Focus across all 4 modes
+for (const modeId of [1, 2, 3, 4]) {
+  assert.equal(Boolean(FLIGHT_MODES[modeId].diagnosticFocus), true, `Mode ${modeId} defines diagnosticFocus`);
+  assert.equal(Boolean(FLIGHT_MODES[modeId].progressionRule), true, `Mode ${modeId} defines progressionRule`);
+  const mPrompt = buildSystemInstruction('CHARLIE', modeId, 30);
+  assert.equal(mPrompt.includes(FLIGHT_MODES[modeId].diagnosticFocus), true);
+}
+
+// 9. Verify Section 15 Diagnostic Operational Examples (Case 1, Case 2, Case 3 Safety Net)
+const case1 = parseTriChannelPacket(
+  generateOfflineSocraticResponse('How do I find the final velocity if it drops for 3 seconds?', 4).text
+);
+assert.equal(case1.spokenText.includes('calibrate our instruments'), true, 'Case 1 Kinematics Micro-Diagnostic');
+
+const case2 = parseTriChannelPacket(
+  generateOfflineSocraticResponse('I keep getting the wrong answer for 2x^2 - 8x = 0.', 1).text
+);
+assert.equal(case2.spokenText.includes('what graphical feature'), true, 'Case 2 Quadratics Micro-Diagnostic');
+
+const case3 = parseTriChannelPacket(
+  generateOfflineSocraticResponse('Uh... the y-axis?', 1).text
+);
+assert.equal(case3.telemetry.delib_state, 'COGNITIVE_STALL', 'Case 3 Safety Net tags COGNITIVE_STALL');
+assert.equal(case3.telemetry.hint_level, 1, 'Case 3 Safety Net advances hint_level to 1');
+assert.equal(case3.spokenText.includes('x-intercepts'), true, 'Case 3 Safety Net bridges to x-intercepts');
+
+console.log('ALL SECTION 15 MICRO-DIAGNOSTIC, GRAPH ENGINE, PAUSE DETECTOR, AND SOLUTION VIDEO TESTS PASSED.');

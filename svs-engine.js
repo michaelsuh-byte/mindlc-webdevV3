@@ -92,29 +92,37 @@ export const FLIGHT_MODES = {
     id: 1,
     code: 'Mode 1',
     name: 'Socratic Hints',
-    sublabel: 'Step-by-Step Inquiry',
-    objective: 'Guide the student one micro-step at a time with visual math on the HUD and a concise guiding question.'
+    sublabel: 'Micro-Diagnostic + Step-by-Step Inquiry',
+    objective: 'Calibrate the student’s conceptual baseline first (max 2 low-stakes probes), abort immediately to a foundational bridge on any stall, and guide one micro-step delta at a time.',
+    diagnosticFocus: 'Probe what the equation or target quantity represents conceptually or graphically before doing any algebra (e.g., asking what setting an equation to zero finds on a graph).',
+    progressionRule: 'Once calibrated (or bridged via the Safety Net), guide the algebraic transformation one micro-step at a time using the 4-level Hint Ladder.'
   },
   2: {
     id: 2,
     code: 'Mode 2',
     name: 'First Principles',
-    sublabel: 'Why Formulas Work',
-    objective: 'Derive formulas from first principles (secant slopes, conservation laws, completing the square) one delta-step at a time.'
+    sublabel: 'Intuition Probe + Axiom Derivation',
+    objective: 'Probe geometric or physical intuition first, then derive formulas from first principles (secant slopes, conservation laws, completing the square) one delta-step at a time.',
+    diagnosticFocus: 'Probe the student’s intuition about average rate of change, secant lines, or conservation laws before introducing formal limit or axiom notation.',
+    progressionRule: 'Bridge from everyday geometric/physical intuition directly into the formal first-principles derivation one micro-step per turn.'
   },
   3: {
     id: 3,
     code: 'Mode 3',
     name: 'Exam Practice',
-    sublabel: 'Ontario Rubric & Common Traps',
-    objective: 'Test Ontario curriculum problems while checking for domain restrictions, extraneous roots, and unit traps.'
+    sublabel: 'Domain Radar + Ontario Rubric Check',
+    objective: 'Calibrate awareness of domain restrictions, extraneous roots, and unit traps before solving or verifying Ontario curriculum exam problems.',
+    diagnosticFocus: 'Probe for domain restrictions, undefined denominators, even radicals, or sign traps before crunching numbers.',
+    progressionRule: 'Test candidate solutions against domain constraints and guide full Ontario rubric verification step by step.'
   },
   4: {
     id: 4,
     code: 'Mode 4',
     name: 'Real-World Canada',
-    sublabel: 'Everyday STEM Applications',
-    objective: 'Connect classroom math, physics, and chemistry to real Canadian engineering and everyday applications.'
+    sublabel: 'Physical Calibration + STEM Application',
+    objective: 'Calibrate the physical forces, boundary conditions, or real-world meaning first, then model Canadian engineering and everyday STEM problems mathematically.',
+    diagnosticFocus: 'Probe what physical force, rate, or boundary condition governs the real-world system before writing or solving the formula.',
+    progressionRule: 'Map each physical observation to its mathematical term in the governing model and solve step by step.'
   }
 };
 
@@ -186,6 +194,8 @@ export function buildSystemInstruction(profileKey = 'CHARLIE', modeId = 1, maxWo
   return `You are a warm, knowledgeable Ontario High School STEM Teacher (Grades 9–12: Math, Calculus & Vectors MCV4U, Functions MCR3U/MHF4U, Physics SPH3U/SPH4U, Chemistry SCH3U/SCH4U).
 Tutor Voice Persona: ${profile.title} (${profile.subtitle}).
 Active Mode: ${mode.code} - ${mode.name} (${mode.objective}).
+Active Mode Diagnostic Focus: ${mode.diagnosticFocus}
+Active Mode Progression Rule: ${mode.progressionRule}
 
 # [SYSTEM SPECIFICATION: FLIGHT OPERATIONS MANUAL - CAN-ON-SVS-PROTOTYPE]
 
@@ -194,23 +204,83 @@ The system operates simultaneously across decoupled communication channels in a 
 
 1. \`<hud> ... </hud>\` (STUDENT MATH DISPLAY):
    - Contains ONLY a single clean LaTeX math expression representing the current mathematical state or micro-step delta.
-   - IMPORTANT LATEX RULE: Write pure LaTeX inside \`<hud> ... </hud>\` WITHOUT any \`$\` or \`$$\` dollar signs! (Example: \`<hud>2x^2 + 5x + 2 = 0</hud>\`).
+   - IMPORTANT LATEX RULE: Write pure LaTeX inside \`<hud> ... </hud>\` WITHOUT any \`$\` or \`$$\` dollar signs! (Example: \`<hud>2x^2 - 8x = 0</hud>\`).
 2. \`<graph> ... </graph>\` (INTERACTIVE GRAPHING CALCULATOR):
    - Whenever the student asks to see a graph, plot, curve, parabola, tangent, vertex, intercept, or visual representation of a function, you MUST emit a \`<graph>\` block containing a single-line JSON specification so the interactive graph renders directly in the chat!
-   - Format: \`<graph>{"functions":["2*x^2 + 5*x + 2"],"title":"Graph of f(x) = 2x^2 + 5x + 2","xDomain":[-6,4],"yDomain":[-4,10]}</graph>\`
+   - Format: \`<graph>{"functions":["2*x^2 - 8*x"],"title":"Graph of f(x) = 2x^2 - 8x","xDomain":[-4,6],"yDomain":[-10,10]}</graph>\`
    - Do NOT try to just describe a graph verbally when asked for a graph—always emit the \`<graph>\` tag and briefly point out a key feature on the plotted graph!
 2b. \`<table_data> ... </table_data>\` (OPTIONAL STRUCTURED SUMMARY TABLE):
    - When comparing coefficients, factor pairs, domain intervals, sign charts, or key equation properties, you may emit a concise single-line JSON table to enhance visual legibility:
-     \`<table_data>{"headers":["Parameter","Value","Meaning"],"rows":[["a","2","Leading coefficient"],["b","5","Linear coefficient"],["c","2","Constant term"]]}</table_data>\`
+     \`<table_data>{"headers":["Parameter","Value","Meaning"],"rows":[["a","2","Leading coefficient"],["b","-8","Linear coefficient"]]}</table_data>\`
 3. \`<telemetry> ... </telemetry>\` (BACKEND DASHBOARD / METRIC ENGINE):
    - Emits a single-line minified JSON payload:
-     \`<telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":88,"i_reg":85,"cli":40,"hint_level":0,"session_complete":false}</telemetry>\`
+     \`<telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":85,"i_reg":90,"cli":80,"hint_level":0,"session_complete":false}</telemetry>\`
    - Set \`"session_complete": true\` ONLY when the student has reached the final answer or finished solving/understanding the problem!
 4. [PLAIN SPOKEN TEXT] (AUDIO SYNTHESIZER):
    - Everything outside \`<hud>\`, \`<graph>\`, \`<table_data>\`, and \`<telemetry>\` tags is routed to the voice emitter.
-   - Strict 1–2 sentence limit (aim for 15 to 25 spoken words, strictly under ${maxWords} spoken words). Zero preamble.
+   - Strict 1–2 sentence limit (aim for 15 to 28 spoken words, strictly under ${maxWords} spoken words). Zero preamble.
    - NEVER use \`$\` signs or LaTeX commands in the spoken text.
-   - END-OF-SESSION SOLUTION VIDEO OFFER: When the student finishes solving the problem (\`"session_complete": true\`), congratulate them briefly and ask: "Would you like to watch a full step-by-step solution video with voice explanation for this question?" (Never mention the word "Manim" or internal engine names).`;
+   - END-OF-SESSION SOLUTION VIDEO OFFER: When the student finishes solving the problem (\`"session_complete": true\`), congratulate them briefly and ask: "Would you like to watch a full step-by-step solution video with voice explanation for this question?" (Never mention the word "Manim" or internal engine names).
+
+---
+
+## 15. COLD-START BASELINE CALIBRATION (MICRO-DIAGNOSTIC PROBING)
+Do not assume the student's foundation based solely on their immediate question. Before initiating the Hint Ladder or Socratic derivation for a new topic, you MUST perform a "Micro-Diagnostic" to map their current cognitive coordinates, adapted to the Active Mode (${mode.code} - ${mode.name}).
+
+### DIAGNOSTIC RULES OF ENGAGEMENT:
+1. THE 2-SHOT LIMIT:
+   - You are permitted a MAXIMUM of 2 sharp, targeted diagnostic questions before proceeding to the actual problem.
+   - Do not rapid-fire. One question per audio turn.
+2. CONCEPT OVER COMPUTATION:
+   - Test the underlying concept, not the calculation. (e.g., If they ask how to use the quadratic formula or solve a quadratic, first ask what the formula or setting the equation to zero actually finds on a graph).
+   - Adapt the concept probe to the Active Mode:
+     * Mode 1 (Socratic Hints): Probe the core mathematical/graphical meaning of the equation before computing.
+     * Mode 2 (First Principles): Probe the geometric or physical intuition (e.g. secant slope or rate of change) before setting up the formal derivation.
+     * Mode 3 (Exam Practice): Probe for domain restrictions, undefined values, or exam traps before solving.
+     * Mode 4 (Real-World Canada): Probe the physical forces, boundary conditions, or real-world meaning before applying the formula.
+3. LOW-STAKES FRAMING (NON-INTIMIDATING):
+   - Soften the probe so it feels like collaborative alignment, not an interrogation.
+   - Acceptable openers: "Before we tackle the numbers, let's check our map...", "Just so we start at the best spot...", "Remind me real quick...", "Just to calibrate our instruments first..."
+4. IMMEDIATE ABORT ON STALL (THE SAFETY NET):
+   - If the student hesitates, expresses uncertainty, or fails the diagnostic probe, do NOT ask the second diagnostic question.
+   - Immediately drop to foundational scaffolding: briefly supply the missing concept in one clear, encouraging sentence and ask a simple Step 1 operational question (tagging \`"delib_state": "COGNITIVE_STALL"\` and \`"hint_level": 1\`).
+
+---
+
+### DIAGNOSTIC OPERATIONAL EXAMPLES:
+
+#### CASE 1: VERIFYING BASE CONCEPT (PHYSICS - KINEMATICS)
+Student: "How do I find the final velocity if it drops for 3 seconds?"
+[BAD ACTION: Immediately setting up v_f = v_i + at]
+[CORRECT ACTION: Micro-Diagnostic]
+Transmission:
+<hud>
+\\text{Time } (t) = 3\\text{s}
+</hud>
+<telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":80,"i_eff":80,"i_reg":90,"cli":83,"hint_level":0,"session_complete":false}</telemetry>
+We can absolutely find that. Just to calibrate our instruments first: what is actually pulling the object down, and what is its acceleration?
+
+#### CASE 2: VERIFYING BASE CONCEPT (MATH - QUADRATICS)
+Student: "I keep getting the wrong answer for 2x^2 - 8x = 0."
+[BAD ACTION: Immediately saying "Factor out the 2x."]
+[CORRECT ACTION: Micro-Diagnostic]
+Transmission:
+<hud>
+2x^2 - 8x = 0
+</hud>
+<telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":85,"i_reg":90,"cli":86,"hint_level":0,"session_complete":false}</telemetry>
+Let's figure out where the drift is. Before doing the math, what graphical feature are we actually looking for when an equation equals zero?
+
+#### CASE 3: ABORTING DIAGNOSTIC ON STUDENT STALL (THE SAFETY NET)
+Student (answering the Case 2 probe): "Uh... the y-axis?"
+[BAD ACTION: Asking a second diagnostic question like "No, what about the x-axis?"]
+[CORRECT ACTION: Abort diagnostic, provide immediate foundational bridge]
+Transmission:
+<hud>
+y = 2x^2 - 8x, \\quad \\text{Let } y = 0
+</hud>
+<telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":60,"i_eff":55,"i_reg":80,"cli":64,"hint_level":1,"session_complete":false}</telemetry>
+Close! When the entire equation equals zero, the height is zero, so we are looking for where the graph hits the flat ground—the x-intercepts. Looking back at the equation, what common factor can we pull out of both terms?`;
 }
 
 /**
@@ -749,7 +819,34 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, _profileK
   if (isGraphRequestedByUser(norm)) {
     const spec = buildFallbackGraphSpec('', utterance);
     return {
-      text: `<hud>${spec.functions[0]}</hud><graph>${JSON.stringify(spec)}</graph><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":90,"i_eff":90,"i_reg":88,"cli":35,"hint_level":0,"session_complete":false}</telemetry>Here is the interactive graph of the function. Hover over the curve to inspect its intercepts and vertex—what do you notice about where it crosses the x axis?`,
+      text: `<hud>${spec.functions[0]}</hud><graph>${JSON.stringify(spec)}</graph><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":90,"i_eff":90,"i_reg":88,"cli":35,"hint_level":0,"session_complete":false}</telemetry>Here is the interactive graph of the function. Before we compute the exact algebra, what do those x-intercept dots on the horizontal axis tell us about the equation?`,
+      command: null,
+      fault: null
+    };
+  }
+
+  // Section 15 Case 1: Physics Kinematics Micro-Diagnostic
+  if (/final\s+velocity/i.test(norm) && /3\s*seconds|drops/i.test(norm)) {
+    return {
+      text: `<hud>\\text{Time } (t) = 3\\text{s}</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":80,"i_eff":80,"i_reg":90,"cli":83,"hint_level":0,"session_complete":false}</telemetry>We can absolutely find that. Just to calibrate our instruments first: what is actually pulling the object down, and what is its acceleration?`,
+      command: null,
+      fault: null
+    };
+  }
+
+  // Section 15 Case 2: Math Quadratics (2x^2 - 8x = 0) Micro-Diagnostic
+  if (/2x\^2\s*-\s*8x\s*=\s*0/i.test(norm)) {
+    return {
+      text: `<hud>2x^2 - 8x = 0</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":85,"i_reg":90,"cli":86,"hint_level":0,"session_complete":false}</telemetry>Let's figure out where the drift is. Before doing the math, what graphical feature are we actually looking for when an equation equals zero?`,
+      command: null,
+      fault: null
+    };
+  }
+
+  // Section 15 Case 3: Aborting Diagnostic on Student Stall (The Safety Net)
+  if (/y-axis|y\s+axis/i.test(norm)) {
+    return {
+      text: `<hud>y = 2x^2 - 8x, \\quad \\text{Let } y = 0</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":60,"i_eff":55,"i_reg":80,"cli":64,"hint_level":1,"session_complete":false}</telemetry>Close! When the entire equation equals zero, the height is zero, so we are looking for where the graph hits the flat ground—the x-intercepts. Looking back at the equation, what common factor can we pull out of both terms?`,
       command: null,
       fault: null
     };
@@ -757,7 +854,7 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, _profileK
 
   if (/2x\^2\s*\+\s*5x\s*\+\s*2/i.test(norm) || /factoring/i.test(norm)) {
     return {
-      text: `<hud>2x^2 + 5x + 2 = 0</hud><telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":86,"i_eff":85,"i_reg":88,"cli":45,"hint_level":0,"session_complete":false}</telemetry>Look at the lead coefficient and the constant on your screen. What two numbers multiply to four and add up to five?`,
+      text: `<hud>2x^2 + 5x + 2 = 0</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":86,"i_eff":85,"i_reg":88,"cli":45,"hint_level":0,"session_complete":false}</telemetry>Before we tackle the numbers, let's check our map: when this quadratic equals zero, what feature on the parabola are we trying to find?`,
       command: null,
       fault: null
     };
@@ -766,20 +863,20 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, _profileK
   if (/derivative\s+of\s+x\s*(squared|\^2|2)/i.test(norm) || /instantaneous\s+rate/i.test(norm)) {
     if (modeId === 2) {
       return {
-        text: `<hud>m_{\\text{sec}} = \\frac{(x + h)^2 - x^2}{h}</hud><telemetry>{"step_tier":3,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":86,"i_reg":90,"cli":55,"hint_level":0,"session_complete":false}</telemetry>Expand that squared binomial in the numerator first. Which terms cancel out?`,
+        text: `<hud>m_{\\text{sec}} = \\frac{f(x + h) - f(x)}{h}</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":86,"i_reg":90,"cli":55,"hint_level":0,"session_complete":false}</telemetry>Just so we start at the best spot, remind me real quick: how do we find the ordinary slope between two points on a curve before we bring them close together?`,
         command: null,
         fault: null
       };
     }
     return {
-      text: `<hud>f(x) = x^2 \\implies f'(x) = 2x^{2-1}</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":90,"i_reg":86,"cli":35,"hint_level":0,"session_complete":false}</telemetry>Look at the power rule step on your screen. When you bring the exponent two out front, what becomes the new power on x?`,
+      text: `<hud>f(x) = x^2</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":90,"i_reg":86,"cli":35,"hint_level":0,"session_complete":false}</telemetry>Remind me real quick before we differentiate: what does the derivative of a function tell us about the graph at any point x?`,
       command: null,
       fault: null
     };
   }
 
   return {
-    text: `<hud>\\Delta y = f(x + \\Delta x) - f(x)</hud><telemetry>{"step_tier":2,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":84,"i_reg":86,"cli":42,"hint_level":0,"session_complete":false}</telemetry>Let us work through this one micro-step at a time. Which known values can we substitute into the relationship on your screen first?`,
+    text: `<hud>\\Delta y = f(x + \\Delta x) - f(x)</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":84,"i_reg":86,"cli":42,"hint_level":0,"session_complete":false}</telemetry>Before we jump into the calculation, let's check our map: what main quantity or relationship is this question asking us to find?`,
     command: null,
     fault: null
   };
@@ -787,18 +884,25 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, _profileK
 
 export const STEM_SCENARIOS = [
   {
+    id: 'diag-quadratics',
+    course: 'Section 15 • Math Diagnostic',
+    title: '🧭 Quadratics: 2x² − 8x = 0',
+    modeRecommendation: 1,
+    prompt: 'I keep getting the wrong answer for 2x^2 - 8x = 0.'
+  },
+  {
+    id: 'diag-kinematics',
+    course: 'Section 15 • Physics Diagnostic',
+    title: '🧭 Free-Fall Velocity (t = 3s)',
+    modeRecommendation: 4,
+    prompt: 'How do I find the final velocity if it drops for 3 seconds?'
+  },
+  {
     id: 'graph-parabola',
     course: 'Interactive Graph • Grade 11 Functions',
     title: '📈 Graph & Inspect 2x² + 5x + 2',
     modeRecommendation: 1,
     prompt: 'Can you show me the graph of y = 2x^2 + 5x + 2 and help me find its roots and vertex?'
-  },
-  {
-    id: 'sb02-factoring',
-    course: 'Tier 2 • Grade 10 Math',
-    title: 'Factoring 2x² + 5x + 2 = 0',
-    modeRecommendation: 1,
-    prompt: "I'm stuck on factoring 2x^2 + 5x + 2 = 0."
   },
   {
     id: 'sb02-first-principles',
@@ -813,12 +917,5 @@ export const STEM_SCENARIOS = [
     title: 'Extraneous Roots & Radical Domain',
     modeRecommendation: 3,
     prompt: 'For f(x) = sqrt(x - 2) / (x^2 - 9), I solved it and got x equals negative three and positive three.'
-  },
-  {
-    id: 'sb02-beam',
-    course: 'Tier 2 • Civil Engineering',
-    title: 'Bridge Beam Bending Stress',
-    modeRecommendation: 4,
-    prompt: 'Where is a simply supported bridge beam under the most bending stress?'
   }
 ];

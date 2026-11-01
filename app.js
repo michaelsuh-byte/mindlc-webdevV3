@@ -885,10 +885,24 @@ class SocraticGeminiChatApp {
   async fetchServerGeminiChat(utterance, pauseSeconds = 0) {
     const sysPrompt = buildSystemInstruction(this.activeProfileKey, this.activeModeId, this.maxWords);
     const tierObj = STEP_TIERS[this.currentTelemetry.step_tier] || STEP_TIERS[1];
-    const annotatedMessage =
+    const modeObj = FLIGHT_MODES[this.activeModeId] || FLIGHT_MODES[1];
+
+    const userTurnsSoFar = this.conversationHistory.filter(t => t.role === 'user').length;
+    let diagnosticDirective = '';
+    if (userTurnsSoFar === 0 && !isGraphRequestedByUser(utterance)) {
+      diagnosticDirective = `[SECTION 15 COLD-START BASELINE CALIBRATION (Probe 1 of max 2 | ${modeObj.code} - ${modeObj.name}): Do NOT jump straight into calculation. Issue 1 low-stakes conceptual Micro-Diagnostic question (${modeObj.diagnosticFocus})]\n`;
+    } else if (userTurnsSoFar === 1) {
+      diagnosticDirective = `[SECTION 15 DIAGNOSTIC CHECK (Turn 2 of max 2 | ${modeObj.code} - ${modeObj.name}): If the student hesitated, guessed wrongly, or stalled on the diagnostic probe, IMMEDIATELY ABORT the diagnostic (Rule 4 Safety Net), give a 1-sentence foundational bridge, and ask Step 1 of the problem. If they answered the probe accurately, proceed directly into Step 1 of the problem (or at most 1 final diagnostic probe if essential).]\n`;
+    } else if (userTurnsSoFar >= 2) {
+      diagnosticDirective = `[SECTION 15 2-SHOT LIMIT REACHED: Diagnostic probing is complete. Guide the student through the active problem step-by-step (${modeObj.progressionRule}).]\n`;
+    }
+
+    const pauseContext =
       pauseSeconds >= 5
-        ? `[Student Deliberation Pause: ${pauseSeconds.toFixed(1)}s | Previous Step Tier: ${tierObj.tier} (t_expected=${tierObj.expectedSec}s)]\n${utterance}`
-        : utterance;
+        ? `[Student Deliberation Pause: ${pauseSeconds.toFixed(1)}s | Previous Step Tier: ${tierObj.tier} (t_expected=${tierObj.expectedSec}s)]\n`
+        : '';
+
+    const annotatedMessage = `${diagnosticDirective}${pauseContext}${utterance}`;
 
     const res = await fetch('/api/chat', {
       method: 'POST',
