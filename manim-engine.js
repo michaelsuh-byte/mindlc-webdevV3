@@ -12,8 +12,8 @@ import { compileMathExpression, findCurveFeatures } from './graph-engine.js';
 import { sanitizeLatexForHud } from './svs-engine.js';
 
 export function createManimVideoElement(storyboard = {}, options = {}) {
-  const voiceName = options.voiceName || 'Puck';
-  const playbackRate = options.playbackRate || 1.0;
+  const voiceName = options.voiceName || 'Aoede';
+  const playbackRate = options.playbackRate || 1.1;
   const apiKey = options.apiKey || '';
   const onPlaybackStateChange = options.onPlaybackStateChange || (() => {});
 
@@ -246,24 +246,29 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     const narration = String(scenes[sceneIdx]?.narration || '').replace(/\$/g, '').trim();
     if (!narration) return null;
 
-    try {
-      const res = await fetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: narration,
-          voiceName,
-          apiKey: apiKey || undefined
-        })
-      });
-      if (!res.ok) return null;
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      audioCache.set(sceneIdx, url);
-      return url;
-    } catch (_) {
-      return null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: narration,
+            voiceName: voiceName || 'Aoede',
+            apiKey: apiKey || undefined
+          })
+        });
+        if (res.ok) {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          audioCache.set(sceneIdx, url);
+          return url;
+        }
+      } catch (_) {}
+      if (attempt < 3) {
+        await new Promise(r => setTimeout(r, 300 * attempt));
+      }
     }
+    return null;
   }
 
   function stopCurrentAudio() {

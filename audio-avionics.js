@@ -56,8 +56,8 @@ export class AudioAvionicsController {
     this.lastSpeechEventTimestamp = 0;
     this.resumeMicTimer = null;
 
-    // Adjustable voice parameters
-    this.customRateMultiplier = 1.0;
+    // Adjustable voice parameters (default speaking speed set to 1.1x)
+    this.customRateMultiplier = 1.1;
     this.customPitchMultiplier = 1.0;
     this.selectedVoiceURI = '';
 
@@ -458,40 +458,49 @@ export class AudioAvionicsController {
     requestAnimationFrame(() => this.runVadLoop());
   }
 
-  splitSpokenSentences(cleanText = '') {
-    const trimmed = String(cleanText || '').replace(/\s+/g, ' ').trim();
-    if (!trimmed) return [];
-    const match = trimmed.match(/^([^.!?]+[.!?]+)\s+([\s\S]+)$/);
-    if (match && match[1].trim().length >= 8 && match[2].trim().length >= 4) {
-      return [match[1].trim(), match[2].trim()];
-    }
-    return [trimmed];
-  }
-
   async fetchTtsBlobUrl(textChunk, voiceName, signal) {
-    const res = await fetch('/api/tts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: textChunk,
-        voiceName,
-        apiKey: this.apiKey || undefined
-      }),
-      signal
-    });
-    if (!res.ok) {
-      throw new Error(`TTS HTTP ${res.status}`);
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      try {
+        const res = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: textChunk,
+            voiceName: voiceName || 'Aoede',
+            apiKey: this.apiKey || undefined
+          }),
+          signal
+        });
+        if (!res.ok) {
+          throw new Error(`TTS HTTP ${res.status}`);
+        }
+        const wavBlob = await res.blob();
+        return URL.createObjectURL(wavBlob);
+      } catch (err) {
+        if (err?.name === 'AbortError' || signal?.aborted) throw err;
+        lastErr = err;
+        if (attempt < 3) {
+          await new Promise(r => setTimeout(r, 300 * attempt));
+        }
+      }
     }
-    const wavBlob = await res.blob();
-    return URL.createObjectURL(wavBlob);
+    throw lastErr || new Error('Neural TTS unavailable');
   }
 
+  /**
+   * Speaks the tutor burst using ONLY Studio Neural Human Voice (e.g. Aoede).
+   * NEVER falls back to generic browser/OS robotic speechSynthesis voice!
+   */
   async speakCalibratedBurst(cleanText, profileKey = 'CHARLIE') {
     const startTs = performance.now();
     this.stopSpeaking('NEW_BURST');
 
-    const chunks = this.splitSpokenSentences(cleanText);
-    if (chunks.length === 0) return;
+    const normalizedText = String(cleanText || '').replace(/\$/g, '').replace(/\s+/g, ' ').trim();
+    if (!normalizedText) return;
 
     this.isBotSpeaking = true;
     this.engageSpeakerEchoLock();
@@ -502,41 +511,34 @@ export class AudioAvionicsController {
     this.ttsAbortController = abortCtrl;
 
     try {
-      // Fire all sentence chunks in parallel so Sentence 1 (short) arrives in ~350ms while Sentence 2 synthesizes in parallel!
-      const urlPromises = chunks.map(chunk => this.fetchTtsBlobUrl(chunk, voiceName, abortCtrl.signal));
-
-      for (let i = 0; i < urlPromises.length; i++) {
-        const audioUrl = await urlPromises[i];
-        if (abortCtrl.signal.aborted) {
-          URL.revokeObjectURL(audioUrl);
-          return;
-        }
-
-        if (this.currentAudioUrl) {
-          URL.revokeObjectURL(this.currentAudioUrl);
-        }
-        this.currentAudioUrl = audioUrl;
-
-        await new Promise((resolve, reject) => {
-          const audio = new Audio(audioUrl);
-          audio.playbackRate = Math.max(0.8, Math.min(1.25, this.customRateMultiplier));
-          this.currentAudioEl = audio;
-
-          audio.onplay = () => {
-            if (i === 0) {
-              this.onTtfaMeasured(Math.round(performance.now() - startTs));
-            }
-            this.isBotSpeaking = true;
-            this.engageSpeakerEchoLock();
-            this.onBotSpeakingChange(true);
-          };
-
-          audio.onended = () => resolve();
-          audio.onerror = (e) => reject(e);
-
-          audio.play().catch(reject);
-        });
+      const audioUrl = await this.fetchTtsBlobUrl(normalizedText, voiceName, abortCtrl.signal);
+      if (abortCtrl.signal.aborted) {
+        URL.revokeObjectURL(audioUrl);
+        return;
       }
+
+      if (this.currentAudioUrl) {
+        URL.revokeObjectURL(this.currentAudioUrl);
+      }
+      this.currentAudioUrl = audioUrl;
+
+      await new Promise((resolve, reject) => {
+        const audio = new Audio(audioUrl);
+        audio.playbackRate = Math.max(0.75, Math.min(1.5, this.customRateMultiplier || 1.1));
+        this.currentAudioEl = audio;
+
+        audio.onplay = () => {
+          this.onTtfaMeasured(Math.round(performance.now() - startTs));
+          this.isBotSpeaking = true;
+          this.engageSpeakerEchoLock();
+          this.onBotSpeakingChange(true);
+        };
+
+        audio.onended = () => resolve();
+        audio.onerror = (e) => reject(e);
+
+        audio.play().catch(reject);
+      });
 
       if (!abortCtrl.signal.aborted) {
         this.isBotSpeaking = false;
@@ -545,36 +547,10 @@ export class AudioAvionicsController {
       }
     } catch (err) {
       if (err?.name === 'AbortError' || abortCtrl.signal.aborted) return;
-      console.warn('Neural TTS fallback to browser speech:', err);
-      this.speakBrowserFallback(cleanText, profileKey);
+      console.warn('Studio Neural TTS error (generic browser voice fallback is strictly disabled):', err);
+      this.isBotSpeaking = false;
+      this.onBotSpeakingChange(false);
+      this.releaseSpeakerEchoLock();
     }
-  }
-
-  speakBrowserFallback(cleanText, _profileKey = 'CHARLIE') {
-    if (!('speechSynthesis' in window)) {
-      this.isBotSpeaking = false;
-      this.onBotSpeakingChange(false);
-      this.releaseSpeakerEchoLock();
-      return;
-    }
-
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    utterance.rate = Math.max(0.85, Math.min(1.2, this.customRateMultiplier));
-    utterance.pitch = Math.max(0.9, Math.min(1.1, this.customPitchMultiplier));
-    utterance.lang = 'en-CA';
-
-    utterance.onend = () => {
-      this.isBotSpeaking = false;
-      this.onBotSpeakingChange(false);
-      this.releaseSpeakerEchoLock();
-    };
-
-    utterance.onerror = () => {
-      this.isBotSpeaking = false;
-      this.onBotSpeakingChange(false);
-      this.releaseSpeakerEchoLock();
-    };
-
-    window.speechSynthesis.speak(utterance);
   }
 }

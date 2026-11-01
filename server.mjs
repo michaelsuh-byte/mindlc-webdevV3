@@ -22,30 +22,10 @@ const MIME_TYPES = {
  */
 const ttsWavCache = new Map();
 const inFlightTtsMap = new Map();
+let ttsQueuePromise = Promise.resolve();
 
-function getCacheKey(voiceName, text) {
-  return `${voiceName || 'Aoede'}::${String(text || '').trim()}`;
-}
-
-/**
- * Splits spoken text into [firstSentence, remainder] so the first sentence can be synthesized
- * and played in ~350ms while the second sentence synthesizes in parallel.
- */
-function splitSpokenSentences(cleanText = '') {
-  const trimmed = String(cleanText || '').replace(/\s+/g, ' ').trim();
-  if (!trimmed) return [];
-  const match = trimmed.match(/^([^.!?]+[.!?]+)\s+([\s\S]+)$/);
-  if (match && match[1].trim().length >= 8 && match[2].trim().length >= 4) {
-    return [match[1].trim(), match[2].trim()];
-  }
-  return [trimmed];
-}
-
-/**
- * Extracts plain spoken text from a tri-channel LLM response on the server for immediate TTS pre-warming
- */
-function extractServerSpokenText(rawReply = '') {
-  return String(rawReply || '')
+function normalizeTtsText(text = '') {
+  return String(text || '')
     .replace(/<hud>[\s\S]*?<\/hud>/gi, ' ')
     .replace(/<graph>[\s\S]*?<\/graph>/gi, ' ')
     .replace(/<table_data>[\s\S]*?<\/table_data>/gi, ' ')
@@ -54,6 +34,17 @@ function extractServerSpokenText(rawReply = '') {
     .replace(/\$/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function getCacheKey(voiceName, text) {
+  return `${voiceName || 'Aoede'}::${normalizeTtsText(text)}`;
+}
+
+/**
+ * Extracts plain spoken text from a tri-channel LLM response on the server for immediate TTS pre-warming
+ */
+function extractServerSpokenText(rawReply = '') {
+  return normalizeTtsText(rawReply);
 }
 
 /**
@@ -84,14 +75,17 @@ function pcm16ToWavBuffer(pcmBuffer, sampleRate = 24000, numChannels = 1) {
 
 /**
  * Synthesizes or retrieves cached/in-flight WAV audio buffer for `(text, voiceName)`
+ * Uses `gemini-2.5-flash-preview-tts` directly with serialized queue + automatic retry backoff
+ * so concurrent requests never trigger HTTP 429 or drop Aoede's neural voice.
  */
 async function getOrSynthesizeTtsWav(text, voiceName = 'Aoede', apiKey = DEFAULT_API_KEY) {
-  const cleanText = String(text || '').trim();
+  const cleanText = normalizeTtsText(text);
   if (!cleanText || !apiKey) {
     throw new Error('Missing text or API key for TTS');
   }
 
-  const key = getCacheKey(voiceName, cleanText);
+  const resolvedVoice = voiceName || 'Aoede';
+  const key = getCacheKey(resolvedVoice, cleanText);
   if (ttsWavCache.has(key)) {
     return ttsWavCache.get(key);
   }
@@ -100,63 +94,76 @@ async function getOrSynthesizeTtsWav(text, voiceName = 'Aoede', apiKey = DEFAULT
   }
 
   const synthPromise = (async () => {
-    const modelsToTry = [
-      'gemini-3.8-flash-lite-tts',
-      'gemini-2.5-flash-preview-tts'
-    ];
+    // Queue TTS requests so simultaneous calls never collide or hit rate limits
+    const prevJob = ttsQueuePromise;
+    let releaseQueue;
+    ttsQueuePromise = new Promise(resolve => {
+      releaseQueue = resolve;
+    });
 
-    let audioPart = null;
-    let lastErr = null;
+    try {
+      await prevJob.catch(() => {});
 
-    for (const modelName of modelsToTry) {
-      try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: cleanText }] }],
-            generationConfig: {
-              responseModalities: ['AUDIO'],
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: {
-                    voiceName
+      const modelName = 'gemini-2.5-flash-preview-tts';
+      let audioPart = null;
+      let lastErr = null;
+
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: cleanText }] }],
+              generationConfig: {
+                responseModalities: ['AUDIO'],
+                speechConfig: {
+                  voiceConfig: {
+                    prebuiltVoiceConfig: {
+                      voiceName: resolvedVoice
+                    }
                   }
                 }
               }
-            }
-          })
-        });
+            })
+          });
 
-        const data = await response.json();
-        const candidatePart = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data);
-        if (response.ok && candidatePart) {
-          audioPart = candidatePart.inlineData;
-          break;
-        } else {
-          lastErr = new Error(data.error?.message || `TTS HTTP ${response.status}`);
+          const data = await response.json();
+          const candidatePart = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data);
+          if (response.ok && candidatePart) {
+            audioPart = candidatePart.inlineData;
+            break;
+          } else {
+            lastErr = new Error(data.error?.message || `TTS HTTP ${response.status}`);
+          }
+        } catch (e) {
+          lastErr = e;
         }
-      } catch (e) {
-        lastErr = e;
+
+        if (attempt < 3) {
+          await new Promise(r => setTimeout(r, 350 * attempt));
+        }
       }
-    }
 
-    if (!audioPart) {
-      throw lastErr || new Error('Neural TTS generation failed');
-    }
+      if (!audioPart) {
+        throw lastErr || new Error('Neural TTS generation failed');
+      }
 
-    const rawBuffer = Buffer.from(audioPart.data, 'base64');
-    const mime = (audioPart.mimeType || '').toLowerCase();
-    const wavBuffer = mime.includes('wav') ? rawBuffer : pcm16ToWavBuffer(rawBuffer, 24000, 1);
+      const rawBuffer = Buffer.from(audioPart.data, 'base64');
+      const mime = (audioPart.mimeType || '').toLowerCase();
+      const wavBuffer = mime.includes('wav') ? rawBuffer : pcm16ToWavBuffer(rawBuffer, 24000, 1);
 
-    // Keep cache bounded to 80 recent clips
-    if (ttsWavCache.size >= 80) {
-      const oldestKey = ttsWavCache.keys().next().value;
-      ttsWavCache.delete(oldestKey);
+      // Keep cache bounded to 80 recent clips
+      if (ttsWavCache.size >= 80) {
+        const oldestKey = ttsWavCache.keys().next().value;
+        ttsWavCache.delete(oldestKey);
+      }
+      ttsWavCache.set(key, wavBuffer);
+      return wavBuffer;
+    } finally {
+      releaseQueue();
     }
-    ttsWavCache.set(key, wavBuffer);
-    return wavBuffer;
   })();
 
   inFlightTtsMap.set(key, synthPromise);
@@ -168,19 +175,12 @@ async function getOrSynthesizeTtsWav(text, voiceName = 'Aoede', apiKey = DEFAULT
 }
 
 /**
- * Pre-warms both the full spoken text AND its split sentences in parallel in the background
+ * Pre-warms the exact spoken response on the server so `/api/tts` returns immediately from cache/in-flight
  */
 function prewarmSpokenTextTts(rawSpokenText, voiceName = 'Aoede', apiKey = DEFAULT_API_KEY) {
   const clean = extractServerSpokenText(rawSpokenText);
   if (!clean || !apiKey) return;
-
-  const chunks = splitSpokenSentences(clean);
-  for (const chunk of chunks) {
-    getOrSynthesizeTtsWav(chunk, voiceName, apiKey).catch(() => {});
-  }
-  if (chunks.length > 1) {
-    getOrSynthesizeTtsWav(clean, voiceName, apiKey).catch(() => {});
-  }
+  getOrSynthesizeTtsWav(clean, voiceName || 'Aoede', apiKey).catch(() => {});
 }
 
 function readJsonBody(req) {
@@ -339,14 +339,6 @@ Return ONLY valid JSON with these exact keys (no markdown fences, no $ signs):
 
     const rawText = data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join(' ').trim() || '{}';
     const gapAnalysis = JSON.parse(rawText.replace(/```json|```/gi, '').trim());
-
-    // Pre-warm the TTS audio for both the Stage 2 Offer and the Concept Explanation so they speak with 0ms lag!
-    if (gapAnalysis.stage2OfferSpoken) {
-      prewarmSpokenTextTts(gapAnalysis.stage2OfferSpoken, voiceName, apiKey);
-    }
-    if (gapAnalysis.conceptExplanationSpoken) {
-      prewarmSpokenTextTts(gapAnalysis.conceptExplanationSpoken, voiceName, apiKey);
-    }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ gapAnalysis }));

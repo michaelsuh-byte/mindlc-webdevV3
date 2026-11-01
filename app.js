@@ -1452,11 +1452,10 @@ class SocraticGeminiChatApp {
       if (this.activeManimController) {
         this.activeManimController.stop();
       }
-      const profile = VOCAL_PROFILES[this.activeProfileKey] || VOCAL_PROFILES.CHARLIE;
       const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
       const playbackRate = Math.max(
         0.75,
-        Math.min(1.35, profile.baseRate * this.avionics.customRateMultiplier)
+        Math.min(1.5, this.avionics.customRateMultiplier || 1.1)
       );
 
       const manimWidget = createManimVideoElement(attachments.manimStoryboard, {

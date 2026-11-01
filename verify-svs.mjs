@@ -16,7 +16,7 @@ import {
 } from './svs-engine.js';
 
 import { compileMathExpression, findCurveFeatures } from './graph-engine.js';
-import { isIncompleteSpokenClause } from './audio-avionics.js';
+import { isIncompleteSpokenClause, AudioAvionicsController } from './audio-avionics.js';
 
 // 1. Verify Strict Pre-KaTeX Screening Layer (`sanitizeLatexForHud`) strips ALL `$` signs
 const dirtyHud = '<hud>$$a = 2$$, $b = 5$ and $c = 2$</hud>';
@@ -140,4 +140,10 @@ const stage2Offer = generateStage2ConceptOffer({
 assert.equal(stage2Offer.spokenText.toLowerCase().includes('explain'), true, 'Stage 2 offer suggests explaining the concept');
 assert.equal(stage2Offer.telemetry.delib_state, 'COGNITIVE_STALL', 'Stage 2 offer updates telemetry to COGNITIVE_STALL');
 
-console.log('ALL SECTION 15 MICRO-DIAGNOSTIC, TWO-STAGE TIMER (15s), LEARNING-GAP ANALYZER, AND STREAMING TTS TESTS PASSED.');
+// 12. Verify Default Speaking Speed is 1.1x and Generic Browser AI Voice Fallback is Removed
+const testAvionics = new AudioAvionicsController();
+assert.equal(testAvionics.customRateMultiplier, 1.1, 'Default speaking speed is set to 1.1x');
+assert.equal(typeof testAvionics.speakBrowserFallback, 'undefined', 'Generic browser speechSynthesis fallback is completely removed');
+assert.equal(testAvionics.getSelectedNeuralVoiceName('CHARLIE'), 'Aoede', 'Default voice is Aoede');
+
+console.log('ALL SECTION 15 MICRO-DIAGNOSTIC, TWO-STAGE TIMER (15s), LEARNING-GAP ANALYZER, AND AOEDE 1.1X VOICE TESTS PASSED.');
