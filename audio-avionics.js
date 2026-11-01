@@ -458,9 +458,40 @@ export class AudioAvionicsController {
     requestAnimationFrame(() => this.runVadLoop());
   }
 
+  splitSpokenSentences(cleanText = '') {
+    const trimmed = String(cleanText || '').replace(/\s+/g, ' ').trim();
+    if (!trimmed) return [];
+    const match = trimmed.match(/^([^.!?]+[.!?]+)\s+([\s\S]+)$/);
+    if (match && match[1].trim().length >= 8 && match[2].trim().length >= 4) {
+      return [match[1].trim(), match[2].trim()];
+    }
+    return [trimmed];
+  }
+
+  async fetchTtsBlobUrl(textChunk, voiceName, signal) {
+    const res = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: textChunk,
+        voiceName,
+        apiKey: this.apiKey || undefined
+      }),
+      signal
+    });
+    if (!res.ok) {
+      throw new Error(`TTS HTTP ${res.status}`);
+    }
+    const wavBlob = await res.blob();
+    return URL.createObjectURL(wavBlob);
+  }
+
   async speakCalibratedBurst(cleanText, profileKey = 'CHARLIE') {
     const startTs = performance.now();
     this.stopSpeaking('NEW_BURST');
+
+    const chunks = this.splitSpokenSentences(cleanText);
+    if (chunks.length === 0) return;
 
     this.isBotSpeaking = true;
     this.engageSpeakerEchoLock();
@@ -471,53 +502,49 @@ export class AudioAvionicsController {
     this.ttsAbortController = abortCtrl;
 
     try {
-      const res = await fetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: cleanText,
-          voiceName,
-          apiKey: this.apiKey || undefined
-        }),
-        signal: abortCtrl.signal
-      });
+      // Fire all sentence chunks in parallel so Sentence 1 (short) arrives in ~350ms while Sentence 2 synthesizes in parallel!
+      const urlPromises = chunks.map(chunk => this.fetchTtsBlobUrl(chunk, voiceName, abortCtrl.signal));
 
-      if (!res.ok) {
-        throw new Error(`TTS HTTP ${res.status}`);
+      for (let i = 0; i < urlPromises.length; i++) {
+        const audioUrl = await urlPromises[i];
+        if (abortCtrl.signal.aborted) {
+          URL.revokeObjectURL(audioUrl);
+          return;
+        }
+
+        if (this.currentAudioUrl) {
+          URL.revokeObjectURL(this.currentAudioUrl);
+        }
+        this.currentAudioUrl = audioUrl;
+
+        await new Promise((resolve, reject) => {
+          const audio = new Audio(audioUrl);
+          audio.playbackRate = Math.max(0.8, Math.min(1.25, this.customRateMultiplier));
+          this.currentAudioEl = audio;
+
+          audio.onplay = () => {
+            if (i === 0) {
+              this.onTtfaMeasured(Math.round(performance.now() - startTs));
+            }
+            this.isBotSpeaking = true;
+            this.engageSpeakerEchoLock();
+            this.onBotSpeakingChange(true);
+          };
+
+          audio.onended = () => resolve();
+          audio.onerror = (e) => reject(e);
+
+          audio.play().catch(reject);
+        });
       }
 
-      const wavBlob = await res.blob();
-      if (abortCtrl.signal.aborted) return;
-
-      const audioUrl = URL.createObjectURL(wavBlob);
-      this.currentAudioUrl = audioUrl;
-
-      const audio = new Audio(audioUrl);
-      audio.playbackRate = Math.max(0.8, Math.min(1.25, this.customRateMultiplier));
-      this.currentAudioEl = audio;
-
-      audio.onplay = () => {
-        this.onTtfaMeasured(Math.round(performance.now() - startTs));
-        this.isBotSpeaking = true;
-        this.engageSpeakerEchoLock();
-        this.onBotSpeakingChange(true);
-      };
-
-      audio.onended = () => {
+      if (!abortCtrl.signal.aborted) {
         this.isBotSpeaking = false;
         this.onBotSpeakingChange(false);
         this.releaseSpeakerEchoLock();
-      };
-
-      audio.onerror = () => {
-        this.isBotSpeaking = false;
-        this.onBotSpeakingChange(false);
-        this.releaseSpeakerEchoLock();
-      };
-
-      await audio.play();
+      }
     } catch (err) {
-      if (err.name === 'AbortError') return;
+      if (err?.name === 'AbortError' || abortCtrl.signal.aborted) return;
       console.warn('Neural TTS fallback to browser speech:', err);
       this.speakBrowserFallback(cleanText, profileKey);
     }

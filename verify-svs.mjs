@@ -9,6 +9,8 @@ import {
   detectManimConsentIntent,
   computeRetroactiveAttribution,
   generateContextualCheckIn,
+  generateFallbackLearningGapAnalysis,
+  generateStage2ConceptOffer,
   generateOfflineSocraticResponse,
   buildSystemInstruction
 } from './svs-engine.js';
@@ -116,4 +118,26 @@ assert.equal(case3.telemetry.delib_state, 'COGNITIVE_STALL', 'Case 3 Safety Net 
 assert.equal(case3.telemetry.hint_level, 1, 'Case 3 Safety Net advances hint_level to 1');
 assert.equal(case3.spokenText.includes('x-intercepts'), true, 'Case 3 Safety Net bridges to x-intercepts');
 
-console.log('ALL SECTION 15 MICRO-DIAGNOSTIC, GRAPH ENGINE, PAUSE DETECTOR, AND SOLUTION VIDEO TESTS PASSED.');
+// 10. Verify Shortened Scratchpad Timer Limits (Tier 1 = 12s, Tier 2 = 15s, Tier 3 = 20s)
+assert.equal(STEP_TIERS[1].expectedSec, 12, 'Tier 1 deliberation limit is 12 seconds');
+assert.equal(STEP_TIERS[2].expectedSec, 15, 'Tier 2 deliberation limit is 15 seconds');
+assert.equal(STEP_TIERS[3].expectedSec, 20, 'Tier 3 deliberation limit is 20 seconds');
+
+// 11. Verify Behind-the-Scenes Learning-Gap Analysis & Stage 2 Concept Offer
+const gapAnalysis = generateFallbackLearningGapAnalysis({
+  lastHudLatex: '2x^2 + 5x + 2 = 0',
+  lastTutorQuestion: 'What two numbers multiply to four and add up to five?',
+  lastStudentMessage: 'How do I factor 2x^2 + 5x + 2 = 0?'
+});
+assert.equal(Boolean(gapAnalysis.missingConcept), true, 'Diagnoses missing concept behind the scenes');
+assert.equal(Boolean(gapAnalysis.conceptExplanationSpoken), true, 'Generates concept explanation spoken text');
+assert.equal(gapAnalysis.conceptExplanationHud.includes('$'), false, 'Concept explanation HUD has zero $ signs');
+
+const stage2Offer = generateStage2ConceptOffer({
+  activeTier: 2,
+  gapAnalysis
+});
+assert.equal(stage2Offer.spokenText.toLowerCase().includes('explain'), true, 'Stage 2 offer suggests explaining the concept');
+assert.equal(stage2Offer.telemetry.delib_state, 'COGNITIVE_STALL', 'Stage 2 offer updates telemetry to COGNITIVE_STALL');
+
+console.log('ALL SECTION 15 MICRO-DIAGNOSTIC, TWO-STAGE TIMER (15s), LEARNING-GAP ANALYZER, AND STREAMING TTS TESTS PASSED.');

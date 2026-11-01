@@ -20,9 +20,9 @@ export const NEURAL_HUMAN_VOICES = [
 ];
 
 export const STEP_TIERS = {
-  1: { tier: 1, name: 'TIER 1 (Recall / Concept)', expectedSec: 15 },
-  2: { tier: 2, name: 'TIER 2 (1–2 Step Algebra)', expectedSec: 25 },
-  3: { tier: 3, name: 'TIER 3 (Multi-Step Derivation)', expectedSec: 45 }
+  1: { tier: 1, name: 'TIER 1 (Recall / Concept)', expectedSec: 12 },
+  2: { tier: 2, name: 'TIER 2 (1–2 Step Algebra)', expectedSec: 15 },
+  3: { tier: 3, name: 'TIER 3 (Multi-Step Derivation)', expectedSec: 20 }
 };
 
 export const DEFAULT_TELEMETRY = {
@@ -431,6 +431,102 @@ export function generateContextualCheckIn({
 
 export function generateScratchpadSoftPing(activeTier = 2, lastHudLatex = '', lastTutorQuestion = '') {
   return generateContextualCheckIn({ activeTier, lastHudLatex, lastTutorQuestion });
+}
+
+/**
+ * Generates an instant fallback Learning-Gap Analysis behind the scenes
+ * (diagnosing the hidden prerequisite concept that may cause a student to stall at this step)
+ */
+export function generateFallbackLearningGapAnalysis({
+  lastHudLatex = '',
+  lastTutorQuestion = '',
+  lastStudentMessage = ''
+} = {}) {
+  const qNorm = `${lastTutorQuestion} ${lastHudLatex} ${lastStudentMessage}`.toLowerCase();
+
+  if (/multiply|add\s+up|factor|decomposition|2x\^2/i.test(qNorm)) {
+    return {
+      missingConcept: 'Product-Sum Decomposition & Zero-Product Property',
+      whyStuck: 'Difficulty seeing why we multiply the leading coefficient a by c before splitting the middle term b.',
+      bridgingStrategy: 'Connect the student’s response to reverse-FOIL (expanding two binomials) so the product a·c and sum b feel intuitive.',
+      stage2OfferSpoken: 'It looks like this factoring step might feel tricky right now. Would you like me to explain the underlying concept behind product-sum decomposition?',
+      conceptExplanationHud: 'ax^2 + bx + c = ax^2 + px + qx + c \\quad (p \\cdot q = a \\cdot c,\\; p + q = b)',
+      conceptExplanationSpoken: 'When we expand two brackets, the outer and inner products multiply to a times c and add up to the middle number b. Looking at a equals two and c equals two, what is two times two?'
+    };
+  }
+
+  if (/graphical\s+feature|equals\s+zero|intercept|2x\^2\s*-\s*8x/i.test(qNorm)) {
+    return {
+      missingConcept: 'Root-Intercept Equivalence (Setting y = 0 on a Coordinate Graph)',
+      whyStuck: 'Not connecting the algebraic condition f(x) = 0 with the geometric height y = 0 along the horizontal x-axis.',
+      bridgingStrategy: 'Relate the student’s idea to height above the ground: when y is zero, the curve touches the horizontal x-axis.',
+      stage2OfferSpoken: 'Take your time! Would you like me to explain the concept connecting an equation equaling zero to its graph?',
+      conceptExplanationHud: 'f(x) = 0 \\iff y = 0 \\text{ (Points on the horizontal } x\\text{-axis)}',
+      conceptExplanationSpoken: 'Think of y as the vertical height of the curve. Whenever an equation equals zero, its height is zero, which happens right where the curve crosses the horizontal x-axis!'
+    };
+  }
+
+  if (/secant|derivative|instantaneous|h\)\^2|cancel/i.test(qNorm)) {
+    return {
+      missingConcept: 'Difference Quotient & Secant-to-Tangent Limit Intuition',
+      whyStuck: 'Uncertain how the average slope between (x, f(x)) and (x+h, f(x+h)) simplifies algebraically before h approaches zero.',
+      bridgingStrategy: 'Relate their response to ordinary rise-over-run slope, then show how expanding (x+h)² cancels the original x² term.',
+      stage2OfferSpoken: 'This first-principles step has a few pieces. Would you like me to explain the concept behind the secant slope formula?',
+      conceptExplanationHud: 'm_{\\text{sec}} = \\frac{\\text{Rise}}{\\text{Run}} = \\frac{(x+h)^2 - x^2}{h} = \\frac{2xh + h^2}{h}',
+      conceptExplanationSpoken: 'The formula is just rise over run between two nearby points on the curve. When we expand x plus h squared into x squared plus two x h plus h squared, notice how the x squared terms cancel right out!'
+    };
+  }
+
+  if (/domain|radical|sqrt|denominator/i.test(qNorm)) {
+    return {
+      missingConcept: 'Real-Number Domain Restrictions (Even Radicals & Zero Denominators)',
+      whyStuck: 'Overlooking that square roots require non-negative inputs (radicand ≥ 0) even after solving the denominator.',
+      bridgingStrategy: 'Relate their candidate solution directly to testing whether the inside of the square root stays non-negative.',
+      stage2OfferSpoken: 'Would you like me to explain the concept behind domain restrictions for radicals and fractions?',
+      conceptExplanationHud: '\\sqrt{u} \\implies u \\ge 0, \\quad \\frac{1}{v} \\implies v \\ne 0',
+      conceptExplanationSpoken: 'In real numbers, two rules protect our domain: we can never divide by zero, and the number inside a square root must be zero or positive. What happens inside the square root if x is negative three?'
+    };
+  }
+
+  return {
+    missingConcept: 'Core Algebraic & Conceptual Mapping of the Step',
+    whyStuck: 'Translating the verbal or physical relationship into the next isolated algebraic operation.',
+    bridgingStrategy: 'Acknowledge the student’s perspective and break the governing relationship into a concrete numerical example first.',
+    stage2OfferSpoken: 'It looks like this step might be a bit tricky. Would you like me to explain the underlying concept behind this question?',
+    conceptExplanationHud: sanitizeLatexForHud(lastHudLatex || 'y = f(x)'),
+    conceptExplanationSpoken: 'Let us look at the core idea behind this step: we want to isolate how one quantity changes when we adjust the other. Which number or variable in the equation do we already know?'
+  };
+}
+
+/**
+ * Generates the Stage 2 (second 15-second timeout) message offering to explain the concept
+ */
+export function generateStage2ConceptOffer({
+  gapAnalysis = null,
+  activeTier = 2,
+  lastHudLatex = '',
+  lastTutorQuestion = ''
+} = {}) {
+  const fallback = generateFallbackLearningGapAnalysis({ lastHudLatex, lastTutorQuestion });
+  const activeGap = gapAnalysis && gapAnalysis.stage2OfferSpoken ? gapAnalysis : fallback;
+
+  const telemetry = normalizeTelemetryPayload({
+    step_tier: activeTier,
+    delib_state: 'COGNITIVE_STALL',
+    i_flow: 64,
+    i_eff: 62,
+    i_reg: 82,
+    cli: 68,
+    hint_level: 1,
+    session_complete: false
+  });
+
+  return {
+    hudLatex: sanitizeLatexForHud(lastHudLatex || ''),
+    telemetry,
+    spokenText: activeGap.stage2OfferSpoken,
+    gapAnalysis: activeGap
+  };
 }
 
 /**

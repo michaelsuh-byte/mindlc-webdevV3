@@ -25,6 +25,8 @@ import {
   detectManimConsentIntent,
   computeRetroactiveAttribution,
   generateContextualCheckIn,
+  generateFallbackLearningGapAnalysis,
+  generateStage2ConceptOffer,
   detectSystemCommand,
   generateOfflineSocraticResponse
 } from './svs-engine.js';
@@ -45,18 +47,20 @@ class SocraticGeminiChatApp {
     this.lastHudLatex = '';
     this.lastGraphSpec = null;
 
-    // End-of-Session Manim Consent State
+    // End-of-Session Manim Consent State & Stage 2 Concept Explanation State
     this.awaitingManimConsent = false;
+    this.awaitingConceptConsent = false;
     this.activeManimController = null;
+    this.latestLearningGap = null;
 
-    // Section 10 & 20: Telemetry & Deliberation Timer State
+    // Section 10 & 20: Telemetry & Two-Stage Deliberation Timer State
     this.currentTelemetry = { ...DEFAULT_TELEMETRY };
     this.autoScratchpadPing = true;
     this.isTimerPaused = false;
     this.pausedElapsedSec = 0;
     this.delibStartTimestamp = 0;
     this.delibInterval = null;
-    this.softPingIssuedForTurn = false;
+    this.delibStage = 0; // 0 = waiting for Stage 1 check-in (15s), 1 = running second 15s timer for Stage 2 concept offer, 2 = Stage 2 offered
     this.hasActiveProblemTurn = false;
 
     this.isBotSpeaking = false;
@@ -83,7 +87,7 @@ class SocraticGeminiChatApp {
         if (stopBtn) stopBtn.hidden = !speaking;
         this.updateMicStatusUI();
 
-        if (!speaking && this.hasActiveProblemTurn && !this.softPingIssuedForTurn && this.autoScratchpadPing) {
+        if (!speaking && this.hasActiveProblemTurn && this.delibStage < 2 && this.autoScratchpadPing) {
           this.startScratchpadDeliberationClock();
         }
       }
@@ -223,7 +227,10 @@ class SocraticGeminiChatApp {
       this.conversationHistory = [];
       this.stopScratchpadDeliberationClock();
       this.hasActiveProblemTurn = false;
+      this.delibStage = 0;
       this.awaitingManimConsent = false;
+      this.awaitingConceptConsent = false;
+      this.latestLearningGap = null;
       this.lastHudLatex = '';
       this.lastGraphSpec = null;
       this.currentTelemetry = { ...DEFAULT_TELEMETRY };
@@ -581,7 +588,7 @@ class SocraticGeminiChatApp {
         btnStop.classList.remove('stopped');
       }
       if (timerEl) timerEl.textContent = `0.0s / ${tierObj.expectedSec}s`;
-      if (this.hasActiveProblemTurn && !this.isBotSpeaking && !this.softPingIssuedForTurn) {
+      if (this.hasActiveProblemTurn && !this.isBotSpeaking && this.delibStage < 2) {
         this.startScratchpadDeliberationClock();
       }
     }
@@ -610,15 +617,18 @@ class SocraticGeminiChatApp {
   }
 
   /**
-   * Tracks student deliberation time up to t_expected, then automatically stops
+   * Two-Stage Deliberation Clock:
+   * - Stage 0 (first cycle, e.g. 15s for Tier 2): Delivers encouraging check-in message, then transitions to Stage 1.
+   * - Stage 1 (second cycle, another 15s): Suggests if the user wants the chatbot to explain the underlying concept.
    */
   startScratchpadDeliberationClock(resumeFromSeconds = 0) {
     this.stopScratchpadDeliberationClock();
-    if (!this.autoScratchpadPing || this.isTimerPaused) return;
+    if (!this.autoScratchpadPing || this.isTimerPaused || this.delibStage >= 2) return;
 
     this.delibStartTimestamp = performance.now() - resumeFromSeconds * 1000;
     const tierObj = STEP_TIERS[this.currentTelemetry.step_tier] || STEP_TIERS[1];
-    const expectedSec = tierObj.expectedSec;
+    // Stage 0 uses the tier's expectedSec (15s for Tier 2); Stage 1 runs another 15s countdown
+    const expectedSec = this.delibStage === 1 ? 15 : tierObj.expectedSec;
 
     this.delibInterval = setInterval(() => {
       if (!this.autoScratchpadPing || this.isTimerPaused) {
@@ -637,11 +647,13 @@ class SocraticGeminiChatApp {
       const timerEl = document.getElementById('stripScratchpadTimer');
       const fillEl = document.getElementById('stripScratchpadFill');
       if (timerEl) {
-        timerEl.textContent = `${elapsedSec.toFixed(1)}s / ${expectedSec}s`;
+        const prefix = this.delibStage === 1 ? 'Stage 2: ' : '';
+        timerEl.textContent = `${prefix}${elapsedSec.toFixed(1)}s / ${expectedSec}s`;
       }
       if (fillEl) {
         fillEl.style.width = `${pct}%`;
-        fillEl.style.backgroundColor = elapsedSec >= expectedSec ? '#fdd663' : '#a8c7fa';
+        fillEl.style.backgroundColor =
+          elapsedSec >= expectedSec ? '#fdd663' : this.delibStage === 1 ? '#f28b82' : '#a8c7fa';
       }
 
       if (elapsedSec >= 4.0 && this.currentTelemetry.delib_state === 'IMMEDIATE') {
@@ -649,12 +661,16 @@ class SocraticGeminiChatApp {
         this.updateDelibBadgeUI('SCRATCHPAD_ACTIVE');
       }
 
-      // Stop counting once t_expected is reached and issue a context-aware check-in once
       if (elapsedSec >= expectedSec) {
         this.stopScratchpadDeliberationClock();
-        if (!this.softPingIssuedForTurn) {
-          this.softPingIssuedForTurn = true;
-          this.triggerScratchpadSoftPing('AUTO_T_EXPECTED');
+        if (this.delibStage === 0) {
+          // Stage 1 complete -> Issue encouraging check-in; onBotSpeakingChange(false) will automatically start Stage 2 (another 15s)
+          this.delibStage = 1;
+          this.triggerScratchpadSoftPing('AUTO_STAGE_1');
+        } else if (this.delibStage === 1) {
+          // Stage 2 complete (second 15s expired) -> Offer to explain the underlying concept
+          this.delibStage = 2;
+          this.triggerStage2ConceptOffer();
         }
       }
     }, 200);
@@ -674,9 +690,15 @@ class SocraticGeminiChatApp {
   }
 
   /**
-   * Issues a context-aware, varied supportive check-in tailored to the current conversation
+   * Stage 1: Issues a context-aware, varied supportive check-in tailored to the current conversation.
+   * Once the voice finishes speaking this message, `onBotSpeakingChange(false)` automatically runs the timer a second time (15s).
    */
-  triggerScratchpadSoftPing(reason = 'AUTO_T_EXPECTED') {
+  triggerScratchpadSoftPing(reason = 'AUTO_STAGE_1') {
+    if (reason === 'MANUAL_TEST') {
+      this.hasActiveProblemTurn = true;
+      this.delibStage = 1;
+    }
+
     const checkInPacket = generateContextualCheckIn({
       activeTier: this.currentTelemetry.step_tier,
       lastHudLatex: this.lastHudLatex,
@@ -690,11 +712,156 @@ class SocraticGeminiChatApp {
 
     const profile = VOCAL_PROFILES[this.activeProfileKey];
     const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
-    const footerTag = `${profile.code} (${voiceName}) • Check-In (${reason === 'MANUAL_TEST' ? 'Test' : 'Deliberation Pause'})`;
+    const footerTag = `${profile.code} (${voiceName}) • Stage 1 Check-In (${reason === 'MANUAL_TEST' ? 'Test' : '15s Deliberation'})`;
 
     this.appendChatMessage('svs', checkInPacket.spokenText, footerTag, '');
     this.lastSpokenBurst = checkInPacket.spokenText;
     this.avionics.speakCalibratedBurst(checkInPacket.spokenText, this.activeProfileKey);
+  }
+
+  /**
+   * Stage 2 (after the second 15s timer expires):
+   * Suggests if the user wants the chatbot to explain the underlying concept, using the behind-the-scenes learning-gap diagnosis.
+   */
+  triggerStage2ConceptOffer() {
+    this.awaitingConceptConsent = true;
+    const offerPacket = generateStage2ConceptOffer({
+      activeTier: this.currentTelemetry.step_tier,
+      lastHudLatex: this.lastHudLatex,
+      lastTutorQuestion: this.lastSpokenBurst,
+      lastStudentMessage: this.lastStudentUtterance,
+      gapAnalysis: this.latestLearningGap
+    });
+
+    this.currentTelemetry = offerPacket.telemetry;
+    this.updateTelemetryUI(this.currentTelemetry);
+
+    const profile = VOCAL_PROFILES[this.activeProfileKey];
+    const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
+    const footerTag = `${profile.code} (${voiceName}) • Stage 2 Concept Offer • Learning Gap: ${offerPacket.missingConcept}`;
+
+    this.appendChatMessage('svs', offerPacket.spokenText, footerTag, '', {
+      offerConcept: true,
+      missingConcept: offerPacket.missingConcept
+    });
+    this.lastSpokenBurst = offerPacket.spokenText;
+    this.avionics.speakCalibratedBurst(offerPacket.spokenText, this.activeProfileKey);
+  }
+
+  /**
+   * Handles the student's Yes/No decision when asked if they want the chatbot to explain the concept.
+   * Incorporates the behind-the-scenes learning-gap analysis directly into the explanation.
+   */
+  async handleConceptExplanationDecision(decision) {
+    this.awaitingConceptConsent = false;
+    const profile = VOCAL_PROFILES[this.activeProfileKey];
+    const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
+
+    if (decision === 'NO') {
+      const noReply = 'Sounds good! Take your time working through the step, and let me know whenever you are ready.';
+      this.appendChatMessage(
+        'svs',
+        noReply,
+        `${profile.code} (${voiceName}) • Continuing Practice`,
+        ''
+      );
+      this.lastSpokenBurst = noReply;
+      this.avionics.speakCalibratedBurst(noReply, this.activeProfileKey);
+      return;
+    }
+
+    // Student accepted Concept Explanation -> Use pre-analyzed learning gap to explain the missing concept & bridge to the current step
+    const gap =
+      this.latestLearningGap ||
+      generateFallbackLearningGapAnalysis({
+        lastHudLatex: this.lastHudLatex,
+        lastTutorQuestion: this.lastSpokenBurst,
+        lastStudentMessage: this.lastStudentUtterance
+      });
+
+    const hudToDisplay = sanitizeLatexForHud(gap.conceptExplanationHud || this.lastHudLatex);
+    const spokenExplanation = gap.conceptExplanationSpoken;
+
+    if (spokenExplanation) {
+      if (hudToDisplay) {
+        this.lastHudLatex = hudToDisplay;
+        this.updatePinnedLiveHud(hudToDisplay, 0.4);
+      }
+
+      const explainTelemetry = {
+        ...this.currentTelemetry,
+        delib_state: 'COGNITIVE_STALL',
+        hint_level: Math.min(4, (this.currentTelemetry.hint_level || 1) + 1)
+      };
+      this.currentTelemetry = explainTelemetry;
+      this.updateTelemetryUI(this.currentTelemetry);
+
+      const cleanHistoryEntry =
+        (hudToDisplay ? `<hud>${hudToDisplay}</hud>\n` : '') +
+        `<telemetry>${JSON.stringify(explainTelemetry)}</telemetry>\n` +
+        spokenExplanation;
+      this.conversationHistory.push({
+        role: 'user',
+        text: 'Yes, please explain the concept.'
+      });
+      this.conversationHistory.push({
+        role: 'svs',
+        text: cleanHistoryEntry
+      });
+
+      // Reset delibStage to 0 so the timer runs fresh for the follow-up step after the concept explanation is read
+      this.delibStage = 0;
+      this.hasActiveProblemTurn = true;
+
+      this.appendChatMessage(
+        'svs',
+        spokenExplanation,
+        `${profile.code} (${voiceName}) • Concept Gap Bridge (${gap.missingConcept})`,
+        hudToDisplay
+      );
+      this.lastSpokenBurst = spokenExplanation;
+      this.avionics.speakCalibratedBurst(spokenExplanation, this.activeProfileKey);
+
+      // Immediately start analyzing the next potential learning gap behind the scenes while this explanation is read aloud
+      this.analyzeLearningGapBehindTheScenes(spokenExplanation, hudToDisplay, 'Yes, please explain the concept.');
+    }
+  }
+
+  /**
+   * Runs asynchronously behind the scenes AS SOON AS the tutor starts reading the previous script aloud.
+   * Diagnoses the hidden learning gap / prerequisite concept that could cause a student to stall at this step,
+   * and pre-warms the TTS audio for both the Stage 2 offer and the concept explanation.
+   */
+  async analyzeLearningGapBehindTheScenes(tutorSpokenText, hudLatex, studentUtterance) {
+    const fallbackGap = generateFallbackLearningGapAnalysis({
+      lastHudLatex: hudLatex || this.lastHudLatex,
+      lastTutorQuestion: tutorSpokenText || this.lastSpokenBurst,
+      lastStudentMessage: studentUtterance || this.lastStudentUtterance
+    });
+    this.latestLearningGap = fallbackGap;
+
+    try {
+      const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
+      const res = await fetch('/api/analyze-gap', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          history: this.conversationHistory.slice(-6),
+          lastTutorQuestion: tutorSpokenText || this.lastSpokenBurst,
+          lastStudentMessage: studentUtterance || this.lastStudentUtterance,
+          lastHudLatex: hudLatex || this.lastHudLatex,
+          voiceName,
+          apiKey: this.geminiApiKey || undefined
+        })
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.gapAnalysis && data.gapAnalysis.missingConcept) {
+        this.latestLearningGap = data.gapAnalysis;
+      }
+    } catch {
+      // Fallback gap analysis is already in place
+    }
   }
 
   populateVoiceDropdown() {
@@ -798,15 +965,29 @@ class SocraticGeminiChatApp {
       btnPause.classList.remove('paused');
     }
 
-    this.softPingIssuedForTurn = false;
+    this.delibStage = 0;
     this.avionics.stopSpeaking('NEW_STUDENT_TURN');
 
     this.appendChatMessage('student', utterance);
 
-    // Check if we are currently waiting for Yes/No consent for the End-of-Session Manim video,
-    // OR if the last tutor turn mentioned video/manim/animation/solution and the student replied Yes/No
     const consentIntent = detectManimConsentIntent(utterance);
-    const lastTutorMentionedVideo = /\b(manim|video|animation|walkthrough|full\s+solution|would\s+you\s+like)\b/i.test(
+
+    // 1. Check if we are waiting for Yes/No consent on the Stage 2 Concept Explanation Offer
+    if (this.awaitingConceptConsent) {
+      if (consentIntent === 'YES' || consentIntent === 'NO') {
+        await this.handleConceptExplanationDecision(consentIntent);
+        return;
+      }
+      if (/\b(explain|concept|help\s+me\s+understand|show\s+me\s+how)\b/i.test(utterance)) {
+        await this.handleConceptExplanationDecision('YES');
+        return;
+      }
+      this.awaitingConceptConsent = false;
+    }
+
+    // 2. Check if we are currently waiting for Yes/No consent for the End-of-Session solution video,
+    // OR if the last tutor turn mentioned video/manim/animation/solution and the student replied Yes/No
+    const lastTutorMentionedVideo = /\b(manim|video|animation|walkthrough|full\s+solution)\b/i.test(
       this.lastSpokenBurst || ''
     );
 
@@ -902,7 +1083,13 @@ class SocraticGeminiChatApp {
         ? `[Student Deliberation Pause: ${pauseSeconds.toFixed(1)}s | Previous Step Tier: ${tierObj.tier} (t_expected=${tierObj.expectedSec}s)]\n`
         : '';
 
-    const annotatedMessage = `${diagnosticDirective}${pauseContext}${utterance}`;
+    const gapContext =
+      this.latestLearningGap && this.latestLearningGap.missingConcept
+        ? `[BEHIND-THE-SCENES LEARNING GAP ANALYSIS: Missing Concept = "${this.latestLearningGap.missingConcept}" | Root Cause = "${this.latestLearningGap.whyStuck}" | Bridging Strategy = "${this.latestLearningGap.bridgingStrategy}". Relate directly to the student's response below and incorporate this learning-gap insight into your explanation!]\n`
+        : '';
+
+    const annotatedMessage = `${diagnosticDirective}${pauseContext}${gapContext}${utterance}`;
+    const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
 
     const res = await fetch('/api/chat', {
       method: 'POST',
@@ -911,6 +1098,7 @@ class SocraticGeminiChatApp {
         systemInstruction: sysPrompt,
         history: this.conversationHistory,
         message: annotatedMessage,
+        voiceName,
         apiKey: this.geminiApiKey || undefined
       })
     });
@@ -991,6 +1179,15 @@ class SocraticGeminiChatApp {
         this.avionics.speakCalibratedBurst(packet.spokenText, this.activeProfileKey);
       } else if (this.hasActiveProblemTurn && this.autoScratchpadPing) {
         this.startScratchpadDeliberationClock();
+      }
+
+      // As soon as the script is being read by the chatbot, analyze the potential learning gap behind the scenes!
+      if (this.hasActiveProblemTurn && !isSessionComplete) {
+        this.analyzeLearningGapBehindTheScenes(
+          packet.spokenText,
+          packet.hudLatex || this.lastHudLatex,
+          options.studentUtterance || this.lastStudentUtterance
+        );
       }
     }
   }
@@ -1160,6 +1357,50 @@ class SocraticGeminiChatApp {
     if (role === 'svs' && attachments.graphSpec) {
       const graphWidget = createInteractiveGraphElement(attachments.graphSpec);
       bubble.appendChild(graphWidget);
+    }
+
+    // 1.5 Stage 2 Concept Explanation Offer Card (when second 15s timer expires)
+    if (role === 'svs' && attachments.offerConcept) {
+      const conceptCard = document.createElement('div');
+      conceptCard.className = 'manim-offer-card';
+
+      const gapTitle = attachments.missingConcept || this.latestLearningGap?.missingConcept || 'Core Prerequisite Concept';
+      conceptCard.innerHTML = `
+        <div class="manim-offer-title">💡 Concept Explanation Available: ${gapTitle}</div>
+        <div class="manim-offer-desc">
+          Would you like me to explain the underlying concept behind this step so we can bridge the gap together?
+        </div>
+      `;
+
+      const actions = document.createElement('div');
+      actions.className = 'manim-offer-actions';
+
+      const yesBtn = document.createElement('button');
+      yesBtn.type = 'button';
+      yesBtn.className = 'manim-yes-btn';
+      yesBtn.textContent = '💡 Yes, Explain the Concept';
+
+      const noBtn = document.createElement('button');
+      noBtn.type = 'button';
+      noBtn.className = 'manim-no-btn';
+      noBtn.textContent = '✋ I Will Keep Trying';
+
+      yesBtn.addEventListener('click', () => {
+        yesBtn.disabled = true;
+        noBtn.disabled = true;
+        this.handleConceptExplanationDecision('YES');
+      });
+
+      noBtn.addEventListener('click', () => {
+        yesBtn.disabled = true;
+        noBtn.disabled = true;
+        this.handleConceptExplanationDecision('NO');
+      });
+
+      actions.appendChild(yesBtn);
+      actions.appendChild(noBtn);
+      conceptCard.appendChild(actions);
+      bubble.appendChild(conceptCard);
     }
 
     // 2. End-of-Session Step-by-Step Solution Video Consent Offer Card
