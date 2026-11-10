@@ -187,12 +187,27 @@ const calcRms = (buf) => {
 assert.equal(Math.abs(calcRms(normQuiet) - calcRms(normLoud)) < 0.03, true, 'Quiet and loud TTS clips are normalized to consistent RMS loudness');
 
 // 16. Verify Hard Mic Mute During Tutor Speech & Section 16 Topic Anchor / Clue-Gathering Gap Discovery
-assert.equal(testAvionics.echoTailMs, 260, 'Echo cooldown tail is set to 260ms before fresh SpeechRecognition start');
+assert.equal(testAvionics.echoTailMs, 800, 'Echo cooldown tail is set to 800ms so OS speaker buffer & room reverb finish completely');
 testAvionics.recordTutorSpokenFingerprint('Before doing the math, what graphical feature are we looking for when an equation equals zero?');
 assert.equal(
   testAvionics.isLikelyTutorEcho('what graphical feature are we looking for when an equation equals zero'),
   true,
-  'Speaker echo fingerprint filter rejects tutor explanation bleed'
+  'Speaker echo fingerprint filter rejects full tutor explanation bleed'
+);
+assert.equal(
+  testAvionics.isLikelyTutorEcho('equals zero'),
+  true,
+  'Speaker echo fingerprint filter rejects last 2-word phrase of tutor explanation'
+);
+assert.equal(
+  testAvionics.isLikelyTutorEcho('zero'),
+  true,
+  'Speaker echo fingerprint filter rejects last single word of tutor explanation'
+);
+assert.equal(
+  testAvionics.stripTutorTailEcho('equals zero the x intercepts'),
+  'the x intercepts',
+  'stripTutorTailEcho strips leading tutor tail phrase while preserving student words'
 );
 assert.equal(
   testAvionics.isLikelyTutorEcho('the x intercepts'),

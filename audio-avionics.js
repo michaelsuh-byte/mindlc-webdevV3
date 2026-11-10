@@ -47,7 +47,8 @@ export class AudioAvionicsController {
     // Speaker Echo Protection parameters
     this.echoProtectionEnabled = true;
     this.echoCooldownUntil = 0;
-    this.echoTailMs = 260;
+    this.echoTailMs = 800;
+    this.botSpeechEndedTimestamp = 0;
 
     this.isMicActive = false;
     this.isUserSpeaking = false;
@@ -69,6 +70,8 @@ export class AudioAvionicsController {
     this.lastWatchdogTimestamp = 0;
     this.lastTutorSpokenNormalized = '';
     this.lastTutorSpokenWords = new Set();
+    this.lastTutorTailNormalized = '';
+    this.lastTutorTailWordsList = [];
     this.finalizedTranscript = '';
     this.currentInterimTranscript = '';
     this.vadDataArray = null;
@@ -164,7 +167,8 @@ export class AudioAvionicsController {
   }
 
   /**
-   * Records the tutor's spoken text so any late speaker bleed can also be filtered out by content
+   * Records the tutor's spoken text AND specifically the tail (last 8 words) of the sentence
+   * so any late speaker bleed of the final word or phrase is stripped or rejected immediately.
    */
   recordTutorSpokenFingerprint(text = '') {
     const norm = String(text || '')
@@ -173,38 +177,82 @@ export class AudioAvionicsController {
       .replace(/\s+/g, ' ')
       .trim();
     this.lastTutorSpokenNormalized = norm;
-    this.lastTutorSpokenWords = new Set(norm.split(' ').filter(w => w.length >= 3));
+    const allWords = norm.split(' ').filter(Boolean);
+    this.lastTutorSpokenWords = new Set(allWords.filter(w => w.length >= 3));
+    this.lastTutorTailWordsList = allWords.slice(-8);
+    this.lastTutorTailNormalized = this.lastTutorTailWordsList.join(' ');
   }
 
   /**
-   * Secondary acoustic echo guard: checks if a recognized phrase is actually the tutor's own explanation
-   * bleeding from the speakers.
+   * Strips any leading words (or the entire phrase) if they match the last word/phrase of the tutor's speech.
    */
-  isLikelyTutorEcho(candidateText = '') {
-    if (!this.echoProtectionEnabled || !this.lastTutorSpokenNormalized) return false;
-    const norm = String(candidateText || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!norm) return false;
-
-    const words = norm.split(' ').filter(Boolean);
-    if (words.length >= 4 && this.lastTutorSpokenNormalized.includes(norm)) {
-      return true;
+  stripTutorTailEcho(candidateText = '') {
+    const raw = String(candidateText || '').trim();
+    if (!this.echoProtectionEnabled || !this.lastTutorSpokenNormalized || !raw) {
+      return raw;
     }
 
-    const sigWords = words.filter(w => w.length >= 3);
-    if (sigWords.length >= 5 && this.lastTutorSpokenWords.size > 0) {
+    const rawWords = raw.split(/\s+/).filter(Boolean);
+    const normWords = rawWords.map(w => w.toLowerCase().replace(/[^a-z0-9]/g, '')).filter(Boolean);
+    if (normWords.length === 0) return '';
+
+    const fullNorm = normWords.join(' ');
+
+    // 1. Exact tail suffix match (even 1, 2, or 3 words at the end of the tutor's sentence!)
+    if (
+      this.lastTutorSpokenNormalized.endsWith(fullNorm) ||
+      (this.lastTutorTailNormalized && this.lastTutorTailNormalized.includes(fullNorm))
+    ) {
+      return '';
+    }
+
+    // 2. Any 3+ word phrase contained anywhere in the tutor's last burst
+    if (normWords.length >= 3 && this.lastTutorSpokenNormalized.includes(fullNorm)) {
+      return '';
+    }
+
+    // 3. High word-overlap with tutor's sentence
+    const sigWords = normWords.filter(w => w.length >= 3);
+    if (sigWords.length >= 4 && this.lastTutorSpokenWords.size > 0) {
       let matches = 0;
       for (const w of sigWords) {
         if (this.lastTutorSpokenWords.has(w)) matches++;
       }
       if (matches / sigWords.length >= 0.72) {
-        return true;
+        return '';
       }
     }
-    return false;
+
+    // 4. If the recognized string starts with 1–5 words from the tail of the tutor's sentence followed by user speech,
+    // strip the leading tail echo words and keep the user's words!
+    if (this.lastTutorTailWordsList.length > 0 && rawWords.length > 1) {
+      for (let prefixLen = Math.min(6, rawWords.length - 1); prefixLen >= 1; prefixLen--) {
+        const prefixNorm = rawWords
+          .slice(0, prefixLen)
+          .map(w => w.toLowerCase().replace(/[^a-z0-9]/g, ''))
+          .filter(Boolean)
+          .join(' ');
+        if (
+          prefixNorm &&
+          (this.lastTutorSpokenNormalized.endsWith(prefixNorm) ||
+            (prefixLen >= 2 && this.lastTutorTailNormalized.includes(prefixNorm)))
+        ) {
+          return rawWords.slice(prefixLen).join(' ').trim();
+        }
+      }
+    }
+
+    return raw;
+  }
+
+  /**
+   * Secondary acoustic echo guard: checks if a recognized phrase is actually the tutor's own explanation
+   * (including its final word or short phrase) bleeding from the speakers.
+   */
+  isLikelyTutorEcho(candidateText = '') {
+    if (!this.echoProtectionEnabled || !this.lastTutorSpokenNormalized) return false;
+    const stripped = this.stripTutorTailEcho(candidateText);
+    return stripped.length === 0;
   }
 
   /**
@@ -419,9 +467,9 @@ export class AudioAvionicsController {
       let finalChunk = '';
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = String(event.results[i][0]?.transcript || '').trim();
+        const rawTranscript = String(event.results[i][0]?.transcript || '').trim();
+        const transcript = this.stripTutorTailEcho(rawTranscript);
         if (!transcript) continue;
-        if (this.isLikelyTutorEcho(transcript)) continue;
 
         if (event.results[i].isFinal) {
           finalChunk += transcript + ' ';
@@ -441,13 +489,12 @@ export class AudioAvionicsController {
       }
       this.currentInterimTranscript = interim.trim();
 
-      const combined = this.getCombinedPendingTranscript();
+      const combined = this.stripTutorTailEcho(this.getCombinedPendingTranscript());
       if (combined) {
-        if (this.isLikelyTutorEcho(combined)) {
-          this.clearPendingTranscript();
-          return;
-        }
         this.onInterimTranscript(combined);
+      } else {
+        this.clearPendingTranscript();
+        this.onInterimTranscript('');
       }
     };
 
