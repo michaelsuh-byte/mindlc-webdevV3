@@ -171,6 +171,12 @@ export class AudioAvionicsController {
    * so any late speaker bleed of the final word or phrase is stripped or rejected immediately.
    */
   recordTutorSpokenFingerprint(text = '') {
+    const stopWords = new Set([
+      'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was',
+      'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'man', 'new', 'now',
+      'old', 'see', 'two', 'way', 'who', 'boy', 'did', 'its', 'let', 'put', 'say', 'she',
+      'too', 'use', 'what', 'when', 'where', 'which', 'while', 'with', 'this', 'that', 'from', 'have'
+    ]);
     const norm = String(text || '')
       .toLowerCase()
       .replace(/[^a-z0-9\s]/g, ' ')
@@ -178,7 +184,7 @@ export class AudioAvionicsController {
       .trim();
     this.lastTutorSpokenNormalized = norm;
     const allWords = norm.split(' ').filter(Boolean);
-    this.lastTutorSpokenWords = new Set(allWords.filter(w => w.length >= 3));
+    this.lastTutorSpokenWords = new Set(allWords.filter(w => w.length >= 4 && !stopWords.has(w)));
     this.lastTutorTailWordsList = allWords.slice(-8);
     this.lastTutorTailNormalized = this.lastTutorTailWordsList.join(' ');
   }
@@ -206,25 +212,14 @@ export class AudioAvionicsController {
       return '';
     }
 
-    // 2. Any 3+ word phrase contained anywhere in the tutor's last burst
+    // 2. Any 3+ word phrase contained verbatim anywhere in the tutor's last burst
     if (normWords.length >= 3 && this.lastTutorSpokenNormalized.includes(fullNorm)) {
       return '';
     }
 
-    // 3. High word-overlap with tutor's sentence
-    const sigWords = normWords.filter(w => w.length >= 3);
-    if (sigWords.length >= 4 && this.lastTutorSpokenWords.size > 0) {
-      let matches = 0;
-      for (const w of sigWords) {
-        if (this.lastTutorSpokenWords.has(w)) matches++;
-      }
-      if (matches / sigWords.length >= 0.72) {
-        return '';
-      }
-    }
-
-    // 4. If the recognized string starts with 1–5 words from the tail of the tutor's sentence followed by user speech,
-    // strip the leading tail echo words and keep the user's words!
+    // 3. If the recognized string starts with 1–6 words from the tail of the tutor's sentence followed by user speech,
+    // strip the leading tail echo words first and keep the user's words!
+    let remainingRawWords = rawWords;
     if (this.lastTutorTailWordsList.length > 0 && rawWords.length > 1) {
       for (let prefixLen = Math.min(6, rawWords.length - 1); prefixLen >= 1; prefixLen--) {
         const prefixNorm = rawWords
@@ -237,12 +232,28 @@ export class AudioAvionicsController {
           (this.lastTutorSpokenNormalized.endsWith(prefixNorm) ||
             (prefixLen >= 2 && this.lastTutorTailNormalized.includes(prefixNorm)))
         ) {
-          return rawWords.slice(prefixLen).join(' ').trim();
+          remainingRawWords = rawWords.slice(prefixLen);
+          break;
         }
       }
     }
 
-    return raw;
+    // 4. High content-word overlap check on the remaining words
+    const remNormWords = remainingRawWords
+      .map(w => w.toLowerCase().replace(/[^a-z0-9]/g, ''))
+      .filter(Boolean);
+    const sigWords = remNormWords.filter(w => w.length >= 4);
+    if (sigWords.length >= 4 && this.lastTutorSpokenWords.size > 0) {
+      let matches = 0;
+      for (const w of sigWords) {
+        if (this.lastTutorSpokenWords.has(w)) matches++;
+      }
+      if (matches / sigWords.length >= 0.75) {
+        return '';
+      }
+    }
+
+    return remainingRawWords.join(' ').trim();
   }
 
   /**
