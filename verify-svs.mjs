@@ -18,6 +18,8 @@ import {
   buildSystemInstruction,
   extractVisualQuestionFromSpoken,
   ensureExplicitHudLatex,
+  summarizeStepKeyPoint,
+  isInteractiveGraphNeeded,
   inferElementaryDiagramIfHelpful
 } from './svs-engine.js';
 
@@ -266,4 +268,42 @@ assert.equal(inferredBalance?.type, 'balance_scale', 'Infers balance_scale visua
 const noDiagramForCalc = inferElementaryDiagramIfHelpful('Find the derivative of x^2', 'f(x) = x^2', 'What is the derivative?', 'Calculus derivative');
 assert.equal(noDiagramForCalc, null, 'Does not show elementary diagram when not needed');
 
-console.log('ALL EXPLICIT HUD QUESTION, PLAIN MATH-LITERACY PHRASING, LEFT HUD CANVAS DIAGRAM, AND VOICE TESTS PASSED.');
+// 18. Verify Concise Key-Point Step Summarizer (`summarizeStepKeyPoint`), Locked Demonstration Graph Default, & Persistent Tangent-Line-to-Parabola Graph
+const keySummary = summarizeStepKeyPoint(
+  '2x^2 - 8x = 0 \\quad (\\text{Goal: Find } x \\text{ where graph height } y = 0)',
+  'Close! Height zero is actually on the horizontal x-axis (the x-intercepts). Looking at 2x squared minus 8x, what biggest number and letter can divide evenly into both parts?'
+);
+assert.equal(keySummary.keyMathLatex, '2x^2 - 8x = 0', 'Strips verbose parenthetical goal from keyMathLatex');
+assert.equal(keySummary.keyPointText.split(/\s+/).length <= 11, true, 'Key point bullet is concise (<= 11 words)');
+
+assert.equal(
+  isGraphRequestedByUser('Why does the tangent line touch the parabola curve at only one point?'),
+  false,
+  'Follow-up question mentioning "parabola curve" does NOT falsely trigger a graph overwrite'
+);
+assert.equal(
+  isInteractiveGraphNeeded('Show me the graph of a tangent line to a parabola'),
+  false,
+  'Demonstration graph defaults to locked/static (interactive: false)'
+);
+assert.equal(
+  isInteractiveGraphNeeded('Can I trace the points on the graph to see what difference the parameter makes?'),
+  true,
+  'Interactive graph mode unlocks when student wants to trace points or test parameter changes'
+);
+
+const tangentGraph = buildFallbackGraphSpec(
+  'f(x) = x^2',
+  'Show me the graph of the tangent line to the parabola curve'
+);
+assert.equal(tangentGraph.functions.length, 2, 'Tangent-to-parabola graph plots both the parabola and tangent line');
+assert.equal(tangentGraph.interactive, false, 'Tangent-to-parabola demonstration graph is locked by default');
+
+const preservedOnFollowUp = buildFallbackGraphSpec(
+  'f\'(1) = 2',
+  'Why is the slope two at x = 1?',
+  tangentGraph
+);
+assert.equal(preservedOnFollowUp.functions.length, 2, 'Existing session graph is preserved across follow-up turns without changing');
+
+console.log('ALL CONCISE KEY-POINT SUMMARY, WIDER HUD CANVAS, LOCKED/PERSISTENT GRAPH, AND SESSION MEMORY TESTS PASSED.');

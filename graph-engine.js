@@ -275,6 +275,7 @@ export function createInteractiveGraphElement(graphSpec = {}) {
 
   const defaultXDomain = [...xDomain];
   const defaultYDomain = [...yDomain];
+  let isInteractive = Boolean(graphSpec.interactive);
 
   const LOGICAL_W = 600;
   const LOGICAL_H = 280;
@@ -288,10 +289,11 @@ export function createInteractiveGraphElement(graphSpec = {}) {
   header.className = 'desmos-graph-header';
   header.innerHTML = `
     <div class="desmos-title-group">
-      <span class="desmos-badge">📈 FUNCTION GRAPH</span>
+      <span class="desmos-badge">📈 GRAPH</span>
       <span class="desmos-title"></span>
     </div>
     <div class="desmos-toolbar">
+      <button type="button" class="desmos-tool-btn" data-action="toggle-interactive" title="Unlock only when tracing points or testing parameter changes"></button>
       <button type="button" class="desmos-tool-btn" data-action="zoom-in" title="Zoom In">＋</button>
       <button type="button" class="desmos-tool-btn" data-action="zoom-out" title="Zoom Out">－</button>
       <button type="button" class="desmos-tool-btn" data-action="reset" title="Reset View">⟲ Reset</button>
@@ -432,7 +434,7 @@ export function createInteractiveGraphElement(graphSpec = {}) {
       }
       pill.appendChild(mathSpan);
 
-      if (compiledCurves.length > 1) {
+      if (isInteractive && compiledCurves.length > 1) {
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
         delBtn.className = 'desmos-remove-fn';
@@ -451,23 +453,25 @@ export function createInteractiveGraphElement(graphSpec = {}) {
 
     exprBar.appendChild(listWrap);
 
-    const addForm = document.createElement('form');
-    addForm.className = 'desmos-add-form';
-    addForm.innerHTML = `
-      <input type="text" class="desmos-expr-input" placeholder="+ Plot f(x), e.g. 2x + 1" />
-      <button type="submit" class="desmos-add-btn">Plot</button>
-    `;
-    addForm.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const input = addForm.querySelector('input');
-      const val = input.value.trim();
-      if (!val) return;
-      functionsList.push(normalizeFunctionEntry(val, functionsList.length));
-      input.value = '';
-      rebuildCompiledCurves();
-      drawGraph();
-    });
-    exprBar.appendChild(addForm);
+    if (isInteractive) {
+      const addForm = document.createElement('form');
+      addForm.className = 'desmos-add-form';
+      addForm.innerHTML = `
+        <input type="text" class="desmos-expr-input" placeholder="+ Test parameter / plot f(x), e.g. 2x + 1" />
+        <button type="submit" class="desmos-add-btn">Plot</button>
+      `;
+      addForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const input = addForm.querySelector('input');
+        const val = input.value.trim();
+        if (!val) return;
+        functionsList.push(normalizeFunctionEntry(val, functionsList.length));
+        input.value = '';
+        rebuildCompiledCurves();
+        drawGraph();
+      });
+      exprBar.appendChild(addForm);
+    }
   }
 
   function worldToScreen(wx, wy) {
@@ -772,12 +776,40 @@ export function createInteractiveGraphElement(graphSpec = {}) {
     drawGraph();
   }
 
+  function syncInteractiveControlsUI() {
+    const toggleBtn = header.querySelector('[data-action="toggle-interactive"]');
+    const zoomInBtn = header.querySelector('[data-action="zoom-in"]');
+    const zoomOutBtn = header.querySelector('[data-action="zoom-out"]');
+    const resetBtn = header.querySelector('[data-action="reset"]');
+
+    if (toggleBtn) {
+      toggleBtn.textContent = isInteractive ? '🔓 Trace / Test: ON' : '🔒 Locked (Click to Trace/Test)';
+    }
+    if (zoomInBtn) zoomInBtn.hidden = !isInteractive;
+    if (zoomOutBtn) zoomOutBtn.hidden = !isInteractive;
+    if (resetBtn) resetBtn.hidden = !isInteractive;
+    canvas.style.cursor = isInteractive ? 'grab' : 'default';
+  }
+
   header.querySelectorAll('[data-action]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const action = btn.getAttribute('data-action');
-      if (action === 'zoom-in') zoomByFactor(0.75);
-      else if (action === 'zoom-out') zoomByFactor(1.33);
-      else if (action === 'reset') {
+      if (action === 'toggle-interactive') {
+        isInteractive = !isInteractive;
+        if (!isInteractive) {
+          isPanning = false;
+          hoverMouse = null;
+          xDomain = [...defaultXDomain];
+          yDomain = [...defaultYDomain];
+        }
+        syncInteractiveControlsUI();
+        rebuildCompiledCurves();
+        drawGraph();
+      } else if (action === 'zoom-in' && isInteractive) {
+        zoomByFactor(0.75);
+      } else if (action === 'zoom-out' && isInteractive) {
+        zoomByFactor(1.33);
+      } else if (action === 'reset') {
         xDomain = [...defaultXDomain];
         yDomain = [...defaultYDomain];
         pinnedPoint = null;
@@ -803,6 +835,7 @@ export function createInteractiveGraphElement(graphSpec = {}) {
       drawGraph();
       return;
     }
+    if (!isInteractive) return;
     isPanning = true;
     pinnedPoint = null;
     dragStart = {
@@ -822,6 +855,7 @@ export function createInteractiveGraphElement(graphSpec = {}) {
   });
 
   canvas.addEventListener('mousemove', (e) => {
+    if (!isInteractive) return;
     const m = getLogicalMouseCoords(e);
 
     if (isPanning) {
@@ -841,11 +875,13 @@ export function createInteractiveGraphElement(graphSpec = {}) {
   });
 
   canvas.addEventListener('mouseleave', () => {
+    if (!isInteractive) return;
     hoverMouse = null;
     drawGraph();
   });
 
   canvas.addEventListener('wheel', (e) => {
+    if (!isInteractive) return;
     e.preventDefault();
     const m = getLogicalMouseCoords(e);
     const center = screenToWorld(m.x, m.y);
@@ -853,6 +889,7 @@ export function createInteractiveGraphElement(graphSpec = {}) {
     zoomByFactor(factor, center.x, center.y);
   }, { passive: false });
 
+  syncInteractiveControlsUI();
   rebuildCompiledCurves();
   drawGraph();
 

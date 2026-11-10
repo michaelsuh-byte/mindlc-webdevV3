@@ -292,10 +292,21 @@ async function handleChatApi(req, res) {
     const { systemInstruction, history = [], message, voiceName = 'Aoede', maxWords = 30 } = body;
     const contents = [];
 
-    for (const turn of history.slice(-8)) {
+    for (const turn of history.slice(-24)) {
       if (turn && turn.text) {
         const compactTurnText = String(turn.text)
-          .replace(/<graph>[\s\S]*?<\/graph>/gi, '')
+          .replace(/<graph>([\s\S]*?)<\/graph>/gi, (_m, gInner) => {
+            try {
+              const g = JSON.parse(gInner.trim());
+              const fns = Array.isArray(g.functions)
+                ? g.functions.map(f => (typeof f === 'object' ? f.expr || f.label : f)).join(', ')
+                : '';
+              return `[Graph Shown: ${g.title || 'Graph'} (${fns})] `;
+            } catch (_) {
+              return '[Graph Shown] ';
+            }
+          })
+          .replace(/<diagram>[\s\S]*?<\/diagram>/gi, '')
           .replace(/<table_data>[\s\S]*?<\/table_data>/gi, '')
           .replace(/<telemetry>[\s\S]*?<\/telemetry>/gi, '')
           .trim();

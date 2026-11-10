@@ -19,10 +19,12 @@ import {
   STEM_SCENARIOS,
   sanitizeLatexForHud,
   extractVisualQuestionFromSpoken,
+  summarizeStepKeyPoint,
   inferElementaryDiagramIfHelpful,
   buildSystemInstruction,
   parseTriChannelPacket,
   isGraphRequestedByUser,
+  isInteractiveGraphNeeded,
   buildFallbackGraphSpec,
   detectManimConsentIntent,
   computeRetroactiveAttribution,
@@ -57,9 +59,10 @@ class SocraticGeminiChatApp {
     this.lastTurnAskedForClue = false;
     this.gapAbortController = null;
 
-    // Left-Side HUD Canvas Step Progression & Auto-Refresh State
+    // Left-Side HUD Canvas Step Progression, Pinned Graph & Auto-Refresh State
     this.hudSteps = [];
     this.hudShouldRefreshOnNextQuestion = false;
+    this.lastPinnedGraphSignature = '';
 
     // End-of-Session Manim Consent State & Stage 2 Concept Explanation State
     this.awaitingManimConsent = false;
@@ -399,22 +402,32 @@ class SocraticGeminiChatApp {
   }
 
   /**
-   * Plots the current or most recent equation in an interactive graph card in the chat
+   * Plots the current or most recent equation in a persistent graph on the Left HUD Canvas (and in chat)
    */
   plotCurrentGraphInChat() {
     const spec =
       this.lastGraphSpec ||
-      buildFallbackGraphSpec(this.lastStudentUtterance, this.lastHudLatex || 'x^2 - 4');
+      buildFallbackGraphSpec(
+        this.lastHudLatex || 'x^2 - 4',
+        this.lastStudentUtterance || this.activeTopicAnchor,
+        this.lastGraphSpec
+      );
     this.lastGraphSpec = spec;
+    this.updatePinnedHudGraph(spec);
 
-    const spoken = `Here is the interactive graph for ${spec.title || 'our function'}. You can drag to pan, scroll to zoom, hover to inspect roots and extrema, or add another function below.`;
+    const spoken = `Here is the graph for ${spec.title || 'our function'}, pinned on the Left HUD Canvas so you can reference it throughout our discussion.`;
     const profile = VOCAL_PROFILES[this.activeProfileKey];
     const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
+
+    this.conversationHistory.push({
+      role: 'svs',
+      text: `<graph>${JSON.stringify(spec)}</graph>\n${spoken}`
+    });
 
     this.appendChatMessage(
       'svs',
       spoken,
-      `${profile.code} (${voiceName}) • Interactive Graph Engine`,
+      `${profile.code} (${voiceName}) • Pinned Reference Graph`,
       this.lastHudLatex,
       { graphSpec: spec }
     );
@@ -1147,9 +1160,11 @@ class SocraticGeminiChatApp {
 
     this.lastStudentUtterance = utterance;
 
-    // If the previous question finished and refreshed the HUD Canvas, ensure step history is clean for the new question
+    // If the previous question finished and refreshed the HUD Canvas, ensure step & graph state is clean for the new question
     if (this.hudShouldRefreshOnNextQuestion) {
       this.hudSteps = [];
+      this.lastGraphSpec = null;
+      this.lastPinnedGraphSignature = '';
       this.hudShouldRefreshOnNextQuestion = false;
     }
 
@@ -1180,17 +1195,25 @@ class SocraticGeminiChatApp {
 
       if (chatResult && chatResult.reply) {
         const llmReply = chatResult.reply;
-        // Parse and store a compact history entry (omitting bulky <graph> and <telemetry> JSON so long conversations stay fast)
-        const parsedPacket = parseTriChannelPacket(llmReply, this.maxWords, retroactiveTelemetry);
+        const parsedPacket = parseTriChannelPacket(
+          llmReply,
+          this.maxWords,
+          retroactiveTelemetry,
+          this.activeTopicAnchor || utterance
+        );
+        const graphNote = parsedPacket.graphSpec
+          ? `<graph>${JSON.stringify(parsedPacket.graphSpec)}</graph>\n`
+          : '';
         const cleanAssistantHistoryText =
           (parsedPacket.hudLatex ? `<hud>${parsedPacket.hudLatex}</hud>\n` : '') +
+          graphNote +
           parsedPacket.spokenText;
 
         this.conversationHistory.push({ role: 'user', text: utterance });
         this.conversationHistory.push({ role: 'svs', text: cleanAssistantHistoryText });
-        // Bound in-memory history array so elongated conversations never accumulate unbounded payload bloat
-        if (this.conversationHistory.length > 20) {
-          this.conversationHistory = this.conversationHistory.slice(-12);
+        // Retain up to 30 turns (15 full back-and-forth exchanges) so the entire current session is remembered
+        if (this.conversationHistory.length > 30) {
+          this.conversationHistory = this.conversationHistory.slice(-24);
         }
 
         this.hasActiveProblemTurn = true;
@@ -1217,11 +1240,58 @@ class SocraticGeminiChatApp {
       uncertaintyStreak: this.uncertaintyStreak,
       lastTurnAskedForClue: this.lastTurnAskedForClue
     });
+    const parsedSim = parseTriChannelPacket(
+      simResult.text,
+      this.maxWords,
+      retroactiveTelemetry,
+      this.activeTopicAnchor || utterance
+    );
+    this.conversationHistory.push({ role: 'user', text: utterance });
+    this.conversationHistory.push({
+      role: 'svs',
+      text:
+        (parsedSim.hudLatex ? `<hud>${parsedSim.hudLatex}</hud>\n` : '') +
+        (parsedSim.graphSpec ? `<graph>${JSON.stringify(parsedSim.graphSpec)}</graph>\n` : '') +
+        parsedSim.spokenText
+    });
     this.emitTriChannelResponse(simResult.text, {
       speak: true,
       fallbackTelemetry: retroactiveTelemetry,
       studentUtterance: utterance
     });
+  }
+
+  /**
+   * Builds a concise, accurate summary of the current conversation session (including any pinned graph
+   * and the key points discussed so far) so the chatbot always retrieves and remembers prior context.
+   */
+  buildSessionMemoryContext() {
+    const lines = [];
+    if (this.activeTopicAnchor) {
+      lines.push(`- Main Topic / Question Anchor: "${this.activeTopicAnchor}"`);
+    }
+    if (this.lastHudLatex) {
+      lines.push(`- Latest HUD Equation / State: ${this.lastHudLatex}`);
+    }
+    if (this.lastGraphSpec && Array.isArray(this.lastGraphSpec.functions)) {
+      const fnLabels = this.lastGraphSpec.functions
+        .map(f => (typeof f === 'object' ? f.label || f.expr : String(f)))
+        .join('; ');
+      lines.push(
+        `- Pinned Graph Currently Visible on Student's Left HUD Canvas: "${
+          this.lastGraphSpec.title || 'Function Graph'
+        }" showing [${fnLabels}]. (This graph remains visible to the student—refer to it directly on follow-up questions and do NOT replace it unless a new function is needed.)`
+      );
+    }
+    if (this.hudSteps.length > 0) {
+      const stepSummary = this.hudSteps
+        .slice(-5)
+        .map((s, idx) => `Step ${idx + 1}: ${s.keyMathLatex || s.hudLatex} (${s.keyPointText || ''})`)
+        .join(' | ');
+      lines.push(`- Key Points Discussed So Far in This Session: ${stepSummary}`);
+    }
+    if (lines.length === 0) return '';
+    return `[CURRENT SESSION RECORD & PINNED VISUAL STATE:\n${lines.join('\n')}]\n`;
   }
 
   async fetchServerGeminiChat(utterance, pauseSeconds = 0) {
@@ -1248,20 +1318,18 @@ class SocraticGeminiChatApp {
       diagnosticDirective = `[SECTION 15 2-SHOT LIMIT REACHED: Guide the student through the active problem step-by-step (${modeObj.progressionRule}) from the fundamental ground up.]\n`;
     }
 
-    const topicAnchorHeader = this.activeTopicAnchor
-      ? `[MAIN TOPIC ANCHOR: "${this.activeTopicAnchor}" — Stay 100% anchored to this exact topic and scenario. NEVER stray into unrelated examples or equations.]\n`
-      : '';
+    const sessionMemoryBlock = this.buildSessionMemoryContext();
 
     const pauseContext =
       pauseSeconds >= 5
         ? `[Student Deliberation Pause: ${pauseSeconds.toFixed(1)}s | Previous Step Tier: ${tierObj.tier} (t_expected=${tierObj.expectedSec}s)]\n`
         : '';
 
-    const annotatedMessage = `${topicAnchorHeader}${diagnosticDirective}${engagement.directive}\n${pauseContext}${utterance}`;
+    const annotatedMessage = `${sessionMemoryBlock}${diagnosticDirective}${engagement.directive}\n${pauseContext}Student message: ${utterance}`;
     const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
 
-    // Send only the 8 most recent compact turns so multi-turn response latency never increases
-    const recentHistory = this.conversationHistory.slice(-8);
+    // Send up to 24 recent turns (12 full exchanges) so the chatbot remembers the full current session
+    const recentHistory = this.conversationHistory.slice(-24);
 
     const res = await fetch('/api/chat', {
       method: 'POST',
@@ -1319,16 +1387,28 @@ class SocraticGeminiChatApp {
       this.lastHudLatex = packet.hudLatex;
     }
 
-    // Guarantee a visual graph if `<graph>` was emitted OR if the user asked for a graph
-    let graphSpec = packet.graphSpec;
-    if (!graphSpec && isGraphRequestedByUser(options.studentUtterance || this.lastStudentUtterance)) {
-      graphSpec = buildFallbackGraphSpec(
-        options.studentUtterance || this.lastStudentUtterance,
-        packet.hudLatex || this.lastHudLatex
+    // Guarantee a visual graph if `<graph>` was emitted OR if the user explicitly asked for a graph
+    const userUtterance = options.studentUtterance || this.lastStudentUtterance;
+    let newGraphSpec = packet.graphSpec;
+    if (!newGraphSpec && isGraphRequestedByUser(userUtterance)) {
+      newGraphSpec = buildFallbackGraphSpec(
+        packet.hudLatex || this.lastHudLatex,
+        userUtterance,
+        this.lastGraphSpec
       );
     }
-    if (graphSpec) {
-      this.lastGraphSpec = graphSpec;
+
+    if (newGraphSpec) {
+      newGraphSpec = {
+        ...newGraphSpec,
+        interactive: isInteractiveGraphNeeded(userUtterance, newGraphSpec)
+      };
+      this.lastGraphSpec = newGraphSpec;
+      this.updatePinnedHudGraph(newGraphSpec);
+    } else if (this.lastGraphSpec && isInteractiveGraphNeeded(userUtterance)) {
+      // If a graph is already pinned on the HUD and the student now asks to trace or test parameters, unlock it
+      this.lastGraphSpec = { ...this.lastGraphSpec, interactive: true };
+      this.updatePinnedHudGraph(this.lastGraphSpec, true);
     }
 
     // Detect if this turn completes the explanation of a question ("a session", signaled by offering the solution video)
@@ -1348,7 +1428,7 @@ class SocraticGeminiChatApp {
       const diagramSpec =
         packet.diagramSpec ||
         inferElementaryDiagramIfHelpful(
-          options.studentUtterance || this.lastStudentUtterance,
+          userUtterance,
           packet.hudLatex || this.lastHudLatex,
           packet.spokenText,
           this.activeTopicAnchor
@@ -1357,10 +1437,10 @@ class SocraticGeminiChatApp {
       this.updateLeftHudCanvas({
         topicText:
           this.activeTopicAnchor ||
-          options.studentUtterance ||
-          this.lastStudentUtterance ||
+          userUtterance ||
           'Active STEM Problem',
         hudLatex: packet.hudLatex || this.lastHudLatex,
+        spokenText: packet.spokenText,
         questionText: packet.hudQuestionText || extractVisualQuestionFromSpoken(packet.spokenText),
         diagramSpec,
         elapsedMs: performance.now() - t0
@@ -1376,7 +1456,7 @@ class SocraticGeminiChatApp {
       : `${profile.code} (${voiceName}) • ${mode.name} • ${tierLabel}`;
 
     this.appendChatMessage('svs', packet.spokenText, footerTag, packet.hudLatex, {
-      graphSpec,
+      graphSpec: newGraphSpec,
       tableSpec: packet.tableSpec,
       offerManim: isSessionComplete
     });
@@ -1475,11 +1555,53 @@ class SocraticGeminiChatApp {
   }
 
   /**
+   * Pins a demonstration or function graph onto `#hudGraphSection` on the Left HUD Canvas
+   * so it stays visible across all follow-up turns in the current question session without disappearing
+   * or constantly changing unless a genuinely new function graph is needed.
+   */
+  updatePinnedHudGraph(graphSpec = null, forceRemount = false) {
+    const graphSection = document.getElementById('hudGraphSection');
+    const graphMount = document.getElementById('hudGraphMount');
+    const graphTitle = document.getElementById('hudGraphSectionTitle');
+    if (!graphSection || !graphMount) return;
+
+    if (!graphSpec || !Array.isArray(graphSpec.functions) || graphSpec.functions.length === 0) {
+      graphSection.hidden = true;
+      graphMount.innerHTML = '';
+      this.lastPinnedGraphSignature = '';
+      return;
+    }
+
+    const sig = JSON.stringify({
+      fns: graphSpec.functions,
+      pts: graphSpec.points || [],
+      interactive: Boolean(graphSpec.interactive)
+    });
+
+    graphSection.hidden = false;
+    if (graphTitle) {
+      graphTitle.textContent = graphSpec.title || 'Pinned Session Graph';
+    }
+
+    // Do not constantly recreate/reset the graph if the plotted functions & mode are unchanged
+    if (!forceRemount && sig === this.lastPinnedGraphSignature && graphMount.children.length > 0) {
+      return;
+    }
+
+    this.lastPinnedGraphSignature = sig;
+    graphMount.innerHTML = '';
+    const widget = createInteractiveGraphElement(graphSpec);
+    graphMount.appendChild(widget);
+  }
+
+  /**
    * Resets the Left-Side HUD Canvas Panel to a clean state
    */
   resetHudCanvasUI(statusText = 'Ready for Next Question') {
     this.hudSteps = [];
     this.hudShouldRefreshOnNextQuestion = false;
+    this.lastGraphSpec = null;
+    this.lastPinnedGraphSignature = '';
 
     const statusBadge = document.getElementById('hudSessionStatusBadge');
     const topicTitle = document.getElementById('hudTopicTitle');
@@ -1497,6 +1619,7 @@ class SocraticGeminiChatApp {
     if (diagSection) {
       diagSection.hidden = true;
     }
+    this.updatePinnedHudGraph(null);
     this.renderHudStepProgression();
   }
 
@@ -1507,6 +1630,7 @@ class SocraticGeminiChatApp {
   refreshHudCanvasOnQuestionComplete(videoOfferPrompt = '') {
     this.hudSteps = [];
     this.hudShouldRefreshOnNextQuestion = true;
+    this.lastPinnedGraphSignature = '';
 
     const statusBadge = document.getElementById('hudSessionStatusBadge');
     const topicTitle = document.getElementById('hudTopicTitle');
@@ -1531,6 +1655,7 @@ class SocraticGeminiChatApp {
     if (diagSection) {
       diagSection.hidden = true;
     }
+    this.updatePinnedHudGraph(null);
     this.renderHudStepProgression();
   }
 
@@ -1540,11 +1665,12 @@ class SocraticGeminiChatApp {
    *  2. The current step's `<hud>` equation/example,
    *  3. The exact question currently being asked visually,
    *  4. The optional Elementary / Concept Visual Aid Diagram (only when needed), and
-   *  5. The step-by-step progression list for the current question.
+   *  5. Concise Key-Points-Only Step Progression for quick reading.
    */
   updateLeftHudCanvas({
     topicText = '',
     hudLatex = '',
+    spokenText = '',
     questionText = '',
     diagramSpec = null,
     elapsedMs = 0.2,
@@ -1557,10 +1683,6 @@ class SocraticGeminiChatApp {
     const diagTitle = document.getElementById('hudDiagramTitle');
     const diagCanvas = document.getElementById('hudDiagramCanvas');
     const diagCaption = document.getElementById('hudDiagramCaption');
-
-    if (statusBadge) {
-      statusBadge.textContent = `Active Problem • Step ${this.hudSteps.length + 1}`;
-    }
 
     const cleanTopic = String(topicText || this.activeTopicAnchor || 'Active STEM Problem')
       .replace(/\$/g, '')
@@ -1597,32 +1719,39 @@ class SocraticGeminiChatApp {
       diagSection.hidden = true;
     }
 
-    // Append or update the step progression entry for the current question
+    // Summarize into a concise Key Point (core formula + short 5–10 word bullet) so the user can scan quickly
+    const { keyMathLatex, keyPointText } = summarizeStepKeyPoint(
+      effectiveLatex,
+      spokenText || cleanQuestion
+    );
+
     const lastStep = this.hudSteps[this.hudSteps.length - 1];
-    if (
-      !lastStep ||
-      lastStep.hudLatex !== effectiveLatex ||
-      lastStep.questionText !== cleanQuestion
-    ) {
+    if (lastStep && lastStep.keyMathLatex === keyMathLatex) {
+      // Update the current key point in-place rather than piling up duplicate equations
+      lastStep.keyPointText = keyPointText;
+      if (stepLabel) lastStep.label = stepLabel;
+    } else {
       this.hudSteps.push({
         stepNumber: this.hudSteps.length + 1,
-        label: stepLabel || `Step ${this.hudSteps.length + 1}`,
-        hudLatex: effectiveLatex,
-        questionText: cleanQuestion
+        label: stepLabel || `Key Point ${this.hudSteps.length + 1}`,
+        keyMathLatex,
+        keyPointText
       });
-      if (this.hudSteps.length > 10) {
-        this.hudSteps = this.hudSteps.slice(-10);
+      if (this.hudSteps.length > 6) {
+        this.hudSteps = this.hudSteps.slice(-6);
       }
     }
 
     if (statusBadge) {
-      statusBadge.textContent = `Active Problem • Step ${this.hudSteps.length}`;
+      statusBadge.textContent = `Active Problem • ${this.hudSteps.length} Key ${
+        this.hudSteps.length === 1 ? 'Point' : 'Points'
+      }`;
     }
     this.renderHudStepProgression();
   }
 
   /**
-   * Renders the chronological step progression cards inside `#hudStepProgressionList`
+   * Renders concise, key-points-only step progression cards inside `#hudStepProgressionList`
    */
   renderHudStepProgression() {
     const listEl = document.getElementById('hudStepProgressionList');
@@ -1630,7 +1759,9 @@ class SocraticGeminiChatApp {
     if (!listEl) return;
 
     if (countBadge) {
-      countBadge.textContent = `${this.hudSteps.length} ${this.hudSteps.length === 1 ? 'Step' : 'Steps'}`;
+      countBadge.textContent = `${this.hudSteps.length} Key ${
+        this.hudSteps.length === 1 ? 'Point' : 'Points'
+      }`;
     }
 
     listEl.innerHTML = '';
@@ -1638,8 +1769,8 @@ class SocraticGeminiChatApp {
       const empty = document.createElement('div');
       empty.className = 'hud-step-empty';
       empty.textContent = this.hudShouldRefreshOnNextQuestion
-        ? 'Question complete! The step progression canvas is refreshed and ready for your next question.'
-        : 'Each step of our current question will appear here in order as we build the solution together.';
+        ? 'Question complete! Key points refreshed for your next question.'
+        : 'Key points and formulas from our current question appear here in brief bullet form for quick review.';
       listEl.appendChild(empty);
       return;
     }
@@ -1651,22 +1782,22 @@ class SocraticGeminiChatApp {
 
       const head = document.createElement('div');
       head.className = 'hud-step-item-head';
-      head.innerHTML = `<span>${step.label || `Step ${idx + 1}`}</span><span>${
-        isLatest ? '● Current Step' : '✓'
+      head.innerHTML = `<span>${step.label || `Key Point ${idx + 1}`}</span><span>${
+        isLatest ? '● Current' : '✓'
       }</span>`;
       item.appendChild(head);
 
-      if (step.hudLatex) {
+      if (step.keyMathLatex) {
         const mathDiv = document.createElement('div');
         mathDiv.className = 'hud-step-item-math';
-        this.renderLatexElement(mathDiv, step.hudLatex);
+        this.renderLatexElement(mathDiv, step.keyMathLatex);
         item.appendChild(mathDiv);
       }
 
-      if (step.questionText) {
+      if (step.keyPointText) {
         const qDiv = document.createElement('div');
         qDiv.className = 'hud-step-item-question';
-        qDiv.textContent = step.questionText;
+        qDiv.textContent = `• ${step.keyPointText}`;
         item.appendChild(qDiv);
       }
 

@@ -220,12 +220,13 @@ The system operates simultaneously across decoupled communication channels in a 
      * \`"number_line"\`: \`<diagram>{"type":"number_line","title":"Number Line Jump","min":-5,"max":5,"start":-2,"end":3,"caption":"Starting at -2 and moving +5 steps right lands at +3."}</diagram>\`
      * \`"ratio_bars"\`: \`<diagram>{"type":"ratio_bars","title":"Ratio Comparison","labelA":"Part A","valueA":3,"labelB":"Part B","valueB":5,"caption":"Comparing 3 parts to 5 parts."}</diagram>\`
      * \`"area_model"\`: \`<diagram>{"type":"area_model","title":"Rectangle Area Model","widthLabel":"6 m","heightLabel":"4 m","insideLabel":"Area = 6 × 4 = 24 m²","caption":"Area counts the total squares inside the rectangle."}</diagram>\`
-3. \`<graph> ... </graph>\` (INTERACTIVE GRAPHING CALCULATOR — SELECTIVE USE ONLY):
+3. \`<graph> ... </graph>\` (DEMONSTRATION & FUNCTION GRAPH ON THE LEFT HUD CANVAS — SELECTIVE USE ONLY, PERSISTENT & LOCKED BY DEFAULT):
    - Do NOT emit a \`<graph>\` block on every turn or for arithmetic, elementary fractions, physics formulas, or algebra steps where a coordinate graph is not needed.
    - Emit a \`<graph>\` block ONLY when:
-     (a) The student explicitly asks to see a graph, plot, curve, parabola, tangent, vertex, or intercept, OR
-     (b) Visualizing the coordinate curve is strictly needed at this specific step and directly benefits the student's understanding.
-   - Format when needed: \`<graph>{"functions":["2*x^2 - 8*x"],"title":"Graph of f(x) = 2x^2 - 8x","xDomain":[-4,6],"yDomain":[-10,10]}</graph>\`
+     (a) The student explicitly asks to plot or see a graph, OR
+     (b) A coordinate graph is needed to demonstrate an idea or example (such as a tangent line touching a parabola curve).
+   - GRAPH PERSISTENCE & STABILITY RULE: Once a graph is created to demonstrate an idea (e.g., \`f(x) = x^2\` and its tangent line \`y = 2x - 1\`), it stays pinned on the student's Left HUD Canvas across follow-up turns! Do NOT constantly change the functions on follow-up turns, and set \`"interactive": false\` by default so the graph stays locked and steady (set \`"interactive": true\` ONLY if the student must actively trace points or test how changing equation parameters changes the graph).
+   - Format when needed: \`<graph>{"functions":["x^2","2*x - 1"],"title":"Tangent Line y = 2x - 1 to Parabola f(x) = x^2","xDomain":[-4,5],"yDomain":[-3,9],"interactive":false}</graph>\`
 3b. \`<table_data> ... </table_data>\` (OPTIONAL STRUCTURED SUMMARY TABLE):
    - When comparing numbers, factor pairs, or step values helps clarity, you may emit a single-line JSON table:
      \`<table_data>{"headers":["Part","Value","Meaning"],"rows":[["Top (Numerator)","32","Blocks you have"],["Bottom (Denominator)","64","Blocks in 1 full slot"]]}</table_data>\`
@@ -686,35 +687,80 @@ export function generateNextQuestionPrompt(topicTitle = '') {
 }
 
 /**
- * Checks if the user's message is asking to see or plot a graph
+ * Checks if the user's message is explicitly asking to plot, draw, or show a graph
+ * (Does NOT trigger merely because a follow-up question mentions the word "curve" or "parabola").
  */
 export function isGraphRequestedByUser(utterance = '') {
-  return /\b(graph|plot|sketch|curve|parabola|draw|visuali[sz]e|show\s+me\s+what\s+it\s+looks\s+like)\b/i.test(utterance);
+  const norm = String(utterance || '').toLowerCase().trim();
+  return (
+    /\b(graph|plot|sketch|visuali[sz]e)\b/i.test(norm) ||
+    /\b(draw|show)\s+(me\s+)?(the\s+|a\s+)?(graph|plot|curve|parabola|tangent)\b/i.test(norm) ||
+    /\bwhat\s+does\s+(the\s+)?(graph|curve|parabola)\s+look\s+like\b/i.test(norm)
+  );
+}
+
+/**
+ * Determines whether a graph should be unlocked/interactive (movable/traceable/parameter-testing)
+ * vs. locked/static (default for demonstrating an idea or example).
+ */
+export function isInteractiveGraphNeeded(utterance = '', graphSpec = null) {
+  if (graphSpec && typeof graphSpec.interactive === 'boolean') {
+    return graphSpec.interactive;
+  }
+  const norm = String(utterance || '').toLowerCase();
+  return /\b(trace|tracing|test\s+out|test\s+different|change\s+the\s+parameter|change\s+parameters|adjust\s+the|move\s+the\s+graph|zoom|pan|interactive|what\s+difference\s+.*parameter)\b/i.test(
+    norm
+  );
 }
 
 /**
  * Extracts a plottable function expression from a LaTeX HUD string or user utterance
  * when the user asks for a graph.
  */
-export function buildFallbackGraphSpec(hudLatex = '', utterance = '') {
+export function buildFallbackGraphSpec(hudLatex = '', utterance = '', existingGraphSpec = null) {
+  const combined = `${utterance} ${hudLatex}`.toLowerCase();
+
+  // Special case: Tangent line to a parabola demonstration
+  if (/\btangent\b/i.test(combined) && /\b(parabola|curve|x\^2)\b/i.test(combined)) {
+    return {
+      functions: [
+        { expr: 'x^2', label: 'Parabola: f(x) = x^2', color: '#38bdf8' },
+        { expr: '2*x - 1', label: 'Tangent at x = 1: y = 2x - 1', color: '#facc15' }
+      ],
+      points: [{ x: 1, y: 1, label: 'Point of Tangency (1, 1)', color: '#4ade80' }],
+      title: 'Tangent Line to Parabola f(x) = x² at (1, 1)',
+      xDomain: [-3, 4],
+      yDomain: [-2, 8],
+      interactive: isInteractiveGraphNeeded(utterance)
+    };
+  }
+
+  // If an existing graph was already created in this session and no new explicit equation is in `utterance`, keep it steady!
+  const userExprMatch = utterance.match(/(?:y\s*=\s*|f\(x\)\s*=\s*|graph\s+of\s+|graph\s+|plot\s+)([0-9a-zA-Z^+\-*/().\s\\]+)/i);
   const candidates = [];
 
-  // Look for explicit expression in user utterance first (e.g., "graph y = x^2 - 4" or "plot sin(x)")
-  const userExprMatch = utterance.match(/(?:y\s*=\s*|f\(x\)\s*=\s*|graph\s+of\s+|graph\s+|plot\s+)([0-9a-zA-Z^+\-*/().\s\\]+)/i);
   if (userExprMatch && userExprMatch[1]) {
     const cleaned = userExprMatch[1]
-      .replace(/\b(please|for\s+me|now|in\s+the\s+chat)\b/gi, '')
+      .replace(/\b(please|for\s+me|now|in\s+the\s+chat|and\s+help\s+me.*)\b/gi, '')
       .trim();
     if (cleaned && /[x\d]/i.test(cleaned)) {
       candidates.push(cleaned);
     }
   }
 
+  if (candidates.length === 0 && existingGraphSpec && Array.isArray(existingGraphSpec.functions) && existingGraphSpec.functions.length > 0) {
+    return {
+      ...existingGraphSpec,
+      interactive: isInteractiveGraphNeeded(utterance, existingGraphSpec)
+    };
+  }
+
   if (candidates.length === 0 && hudLatex) {
-    // Split across \implies or \quad and take a plottable expression containing x
-    const parts = hudLatex.split(/\\implies|\\quad|;/);
+    // Strip parenthetical goals before extracting expression
+    const strippedHud = hudLatex.replace(/\\quad\s*\([\s\S]*?\)/g, '');
+    const parts = strippedHud.split(/\\implies|\\quad|;/);
     for (const part of parts) {
-      if (/x/i.test(part) && !/\\Delta\s*y/i.test(part)) {
+      if (/x/i.test(part) && !/\\Delta\s*y|\\text/i.test(part)) {
         candidates.push(part.trim());
         break;
       }
@@ -724,9 +770,10 @@ export function buildFallbackGraphSpec(hudLatex = '', utterance = '') {
   const expr = candidates[0] || '2*x^2 + 5*x + 2';
   return {
     functions: [expr],
-    title: `Interactive Graph: ${expr}`,
+    title: `Graph: ${expr}`,
     xDomain: [-8, 8],
-    yDomain: [-6, 10]
+    yDomain: [-6, 10],
+    interactive: isInteractiveGraphNeeded(utterance)
   };
 }
 
@@ -761,6 +808,53 @@ export function extractVisualQuestionFromSpoken(spokenText = '') {
     return questionSentences[questionSentences.length - 1];
   }
   return sentences[sentences.length - 1].trim();
+}
+
+/**
+ * Summarizes a conversation turn into a concise, scannable Key Point (`keyMathLatex` + short `keyPointText`)
+ * for the Left HUD Canvas Step Progression list so the user can read through what was discussed quickly
+ * without verbose question sentences or duplicate text.
+ */
+export function summarizeStepKeyPoint(hudLatex = '', spokenText = '') {
+  const rawHud = sanitizeLatexForHud(hudLatex);
+
+  // Strip parenthetical prompts like `\quad (\text{Goal: ...})` or `\text{Example: }` so only the core formula remains
+  let keyMathLatex = rawHud
+    .replace(/\\quad\s*\([^)]*\\text\{[\s\S]*?\)/gi, '')
+    .replace(/\([^)]*\\text\{[\s\S]*?\)/gi, '')
+    .replace(/^\\text\{\s*(?:Example|Question|Problem\s+Goal)\s*:\s*\}\s*/i, '')
+    .replace(/\\implies\s*\\text\{Find[\s\S]*$/i, '')
+    .trim();
+
+  if (!keyMathLatex) {
+    keyMathLatex = rawHud;
+  }
+
+  // Build a short 4–9 word key-point bullet summarizing what was discussed/established
+  const cleanSpoken = String(spokenText || '').replace(/\$/g, '').trim();
+  const sentences = (cleanSpoken.match(/[^.!?]+[.!?]+/g) || [cleanSpoken]).map(s => s.trim()).filter(Boolean);
+
+  // Prefer a declarative concept/fact sentence if present; otherwise condense the question into a short topic phrase
+  const declarative = sentences.find(
+    s =>
+      !s.endsWith('?') &&
+      !/^(great|close|nice|no\s+worries|we\s+can|let'?s\s+find|minecraft\s+stash\s+boxes\s+are)/i.test(s)
+  );
+
+  let sourceText = declarative || sentences[sentences.length - 1] || '';
+  sourceText = sourceText
+    .replace(/^(close!|great!|exactly!|nice\s+work!|no\s+worries\s+at\s+all!|before\s+we\s+[^,]+,|just\s+so\s+we\s+[^:]+:|let'?s\s+[^:]+:)\s*/i, '')
+    .replace(/\?+$/, '')
+    .trim();
+
+  const words = sourceText.split(/\s+/).filter(Boolean);
+  const keyPointText =
+    words.length > 10 ? `${words.slice(0, 10).join(' ')}…` : words.join(' ');
+
+  return {
+    keyMathLatex,
+    keyPointText: keyPointText || 'Key concept step'
+  };
 }
 
 /**

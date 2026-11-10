@@ -99,7 +99,16 @@
           </div>
         </section>
 
-        <!-- 2. ELEMENTARY / CONCEPT VISUAL AID DIAGRAM (SHOWN ONLY WHEN NECESSARY) -->
+        <!-- 2. PINNED DEMONSTRATION / FUNCTION GRAPH ON HUD CANVAS (PERSISTS ACROSS FOLLOW-UP TURNS) -->
+        <section class="hud-graph-section" id="hudGraphSection" hidden>
+          <div class="hud-section-header">
+            <span class="hud-section-title" id="hudGraphSectionTitle">Pinned Session Graph</span>
+            <span class="hud-visual-badge">Persistent Reference</span>
+          </div>
+          <div class="hud-graph-mount" id="hudGraphMount"></div>
+        </section>
+
+        <!-- 2b. ELEMENTARY / CONCEPT VISUAL AID DIAGRAM (SHOWN ONLY WHEN NECESSARY) -->
         <section class="hud-diagram-section" id="hudDiagramSection" hidden>
           <div class="hud-section-header">
             <span class="hud-section-title" id="hudDiagramTitle">Visual Concept Aid</span>
@@ -111,15 +120,15 @@
           <p class="hud-diagram-caption" id="hudDiagramCaption"></p>
         </section>
 
-        <!-- 3. STEP-BY-STEP PROGRESSION TRAIL FOR CURRENT QUESTION -->
+        <!-- 3. CONCISE KEY-POINTS STEP PROGRESSION SUMMARY -->
         <section class="hud-step-progression-section" id="hudStepProgressionSection">
           <div class="hud-section-header">
-            <span class="hud-section-title">STEP PROGRESSION</span>
-            <span class="hud-step-count-badge" id="hudStepCountBadge">0 Steps</span>
+            <span class="hud-section-title">KEY POINTS DISCUSSED</span>
+            <span class="hud-step-count-badge" id="hudStepCountBadge">0 Key Points</span>
           </div>
           <div class="hud-step-progression-list" id="hudStepProgressionList">
             <div class="hud-step-empty">
-              Each step of our current question will appear here in order as we build the solution together.
+              Key points and formulas from our current question appear here in brief bullet form for quick review.
             </div>
           </div>
         </section>
