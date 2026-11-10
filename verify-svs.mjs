@@ -32,7 +32,7 @@ import {
   releaseVoiceChannel,
   auditAndFixSimultaneousVoices
 } from './audio-avionics.js';
-import { normalizePcm16Buffer, GEMINI_TTS_MODELS } from './server.mjs';
+import { normalizePcm16Buffer, extractCleanPcm16FromAudioBuffer, GEMINI_TTS_MODELS } from './server.mjs';
 
 // 1. Verify Strict Pre-KaTeX Screening Layer (`sanitizeLatexForHud`) strips ALL `$` signs
 const dirtyHud = '<hud>$$a = 2$$, $b = 5$ and $c = 2$</hud>';
@@ -413,4 +413,42 @@ const healedVoice = testAvionics.getSelectedNeuralVoiceName('CHARLIE');
 assert.equal(healedVoice, 'Aoede', 'Auto-heals generic/invalid voice URI back to Studio Neural Voice Aoede');
 assert.equal(testAvionics.voiceIntegrityStats.personaDriftFixed >= 1, true, 'Records personaDriftFixed stat');
 
-console.log('ALL VOICE INTEGRITY AUTO-RECOVERY, MULTI-MODEL TTS FAILOVER, AND TALKING-POINT VERIFICATION TESTS PASSED.');
+// 21. Verify RIFF WAV `data` Chunk Extraction & Trailing `C2PA` Metadata Stripping (Eliminates "chhh" Radio Static at End of Phrase)
+const fakePcmLen = 4800; // 2400 samples
+const fakeHeader = Buffer.alloc(44);
+fakeHeader.write('RIFF', 0);
+fakeHeader.writeUInt32LE(36 + fakePcmLen + 6065, 4);
+fakeHeader.write('WAVE', 8);
+fakeHeader.write('fmt ', 12);
+fakeHeader.writeUInt32LE(16, 16);
+fakeHeader.writeUInt16LE(1, 20);
+fakeHeader.writeUInt16LE(1, 22);
+fakeHeader.writeUInt32LE(24000, 24);
+fakeHeader.writeUInt32LE(48000, 28);
+fakeHeader.writeUInt16LE(2, 32);
+fakeHeader.writeUInt16LE(16, 34);
+fakeHeader.write('data', 36);
+fakeHeader.writeUInt32LE(fakePcmLen, 40);
+
+const fakeAudioPayload = Buffer.alloc(fakePcmLen);
+for (let i = 0; i < fakePcmLen / 2; i++) {
+  fakeAudioPayload.writeInt16LE(Math.round(Math.sin(i * 0.1) * 6000), i * 2);
+}
+
+const fakeC2paChunk = Buffer.alloc(8 + 6065, 0x5a);
+fakeC2paChunk.write('C2PA', 0);
+fakeC2paChunk.writeUInt32LE(6065, 4);
+
+const riffWithTrailingC2pa = Buffer.concat([fakeHeader, fakeAudioPayload, fakeC2paChunk]);
+const extracted = extractCleanPcm16FromAudioBuffer(riffWithTrailingC2pa);
+assert.equal(
+  extracted.pcmBuffer.length,
+  fakePcmLen,
+  'extractCleanPcm16FromAudioBuffer strips 100% of trailing C2PA metadata chunk after WAV data chunk'
+);
+
+const normalizedClean = normalizePcm16Buffer(extracted.pcmBuffer, 0.18);
+const finalSample = normalizedClean.readInt16LE(normalizedClean.length - 2);
+assert.equal(finalSample, 0, 'Cosine tail fade-out brings final PCM sample smoothly to 0 with zero static or pop');
+
+console.log('ALL C2PA STATIC ELIMINATION, VOICE INTEGRITY AUTO-RECOVERY, AND MULTI-MODEL TTS TESTS PASSED.');

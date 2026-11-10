@@ -77,8 +77,79 @@ function extractServerSpokenText(rawReply = '') {
 }
 
 /**
+ * Extracts ONLY the pure 16-bit PCM audio samples from a Gemini TTS audio buffer.
+ * Why this is critical:
+ *  - Models like `gemini-3.8-flash-lite-tts` and `gemini-3.8-flash-tts` return a RIFF `audio/wav` container
+ *    that appends a ~6,065-byte `C2PA` cryptographic manifest chunk (`trainedAlgorithmicMedia`) AFTER the `data` chunk!
+ *  - If those trailing `C2PA` metadata bytes are not stripped at the exact end of the `data` chunk (`offset + 8 + chunkSize`),
+ *    the browser plays the 6KB of binary metadata as 16-bit PCM audio—which sounds like a ~0.13s burst of
+ *    radio static ("chhh") at the end of every phrase!
+ */
+export function extractCleanPcm16FromAudioBuffer(rawBuffer) {
+  if (!rawBuffer || rawBuffer.length < 4) {
+    return { pcmBuffer: Buffer.alloc(0), sampleRate: 24000, numChannels: 1 };
+  }
+
+  let sampleRate = 24000;
+  let numChannels = 1;
+
+  const isRiffWave =
+    rawBuffer.length >= 44 &&
+    rawBuffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    rawBuffer.subarray(8, 12).toString('ascii') === 'WAVE';
+
+  if (isRiffWave) {
+    let offset = 12;
+    while (offset + 8 <= rawBuffer.length) {
+      const chunkId = rawBuffer.subarray(offset, offset + 4).toString('ascii');
+      const chunkSize = rawBuffer.readUInt32LE(offset + 4);
+      const dataStart = offset + 8;
+
+      if (chunkId === 'fmt ' && dataStart + 16 <= rawBuffer.length) {
+        numChannels = rawBuffer.readUInt16LE(dataStart + 2) || 1;
+        sampleRate = rawBuffer.readUInt32LE(dataStart + 4) || 24000;
+      } else if (chunkId === 'data') {
+        const dataEnd = Math.min(rawBuffer.length, dataStart + chunkSize);
+        const evenLen = (dataEnd - dataStart) - ((dataEnd - dataStart) % 2);
+        return {
+          pcmBuffer: rawBuffer.subarray(dataStart, dataStart + Math.max(0, evenLen)),
+          sampleRate,
+          numChannels
+        };
+      }
+
+      // Advance to next RIFF chunk (word-aligned to even byte boundary)
+      offset = dataStart + chunkSize + (chunkSize % 2);
+    }
+
+    // Fallback if RIFF header had non-standard layout: strip any trailing C2PA/metadata signature if present
+    const c2paIdx = rawBuffer.indexOf('C2PA', 44, 'ascii');
+    const endIdx = c2paIdx > 44 ? c2paIdx : rawBuffer.length;
+    const rawLen = endIdx - 44;
+    const evenLen = rawLen - (rawLen % 2);
+    return {
+      pcmBuffer: rawBuffer.subarray(44, 44 + Math.max(0, evenLen)),
+      sampleRate,
+      numChannels
+    };
+  }
+
+  // Raw L16 PCM stream (e.g. gemini-3.1-flash-tts-preview / gemini-2.5-pro-preview-tts):
+  // Also guard against any unexpected trailing C2PA block and ensure even 16-bit sample alignment
+  const c2paIdx = rawBuffer.indexOf('C2PA', 0, 'ascii');
+  const endIdx = c2paIdx > 0 ? c2paIdx : rawBuffer.length;
+  const evenLen = endIdx - (endIdx % 2);
+  return {
+    pcmBuffer: rawBuffer.subarray(0, Math.max(0, evenLen)),
+    sampleRate,
+    numChannels
+  };
+}
+
+/**
  * Normalizes 16-bit signed mono PCM audio to a consistent active-speech RMS loudness (-15 dBFS, targetRms = 0.18)
- * with a soft-knee peak limiter at 0.92 so every step in the solution video and chat sounds uniform in volume.
+ * with a soft-knee peak limiter at 0.92 and a smooth 15ms cosine tail fade-out so every phrase ends cleanly
+ * with zero static, click, or pop.
  */
 export function normalizePcm16Buffer(pcmBuffer, targetRms = 0.18) {
   if (!pcmBuffer || pcmBuffer.length < 4) return pcmBuffer;
@@ -106,6 +177,10 @@ export function normalizePcm16Buffer(pcmBuffer, targetRms = 0.18) {
   // Clamp gain to [0.55, 3.0] so quiet generations are boosted and loud ones are leveled
   const desiredGain = Math.max(0.55, Math.min(3.0, targetRms / Math.max(0.01, activeRms)));
 
+  // Smooth 5ms fade-in (120 samples) and 15ms fade-out (360 samples) at 24kHz to prevent any boundary click/pop
+  const fadeInSamples = Math.min(120, Math.floor(sampleCount / 8));
+  const fadeOutSamples = Math.min(360, Math.floor(sampleCount / 6));
+
   const outBuffer = Buffer.alloc(sampleCount * 2);
   for (let i = 0; i < sampleCount; i++) {
     let val = (pcmBuffer.readInt16LE(i * 2) / 32768) * desiredGain;
@@ -116,6 +191,14 @@ export function normalizePcm16Buffer(pcmBuffer, targetRms = 0.18) {
       const excess = absVal - 0.78;
       val = sign * (0.78 + 0.16 * Math.tanh(excess / 0.16));
     }
+
+    if (fadeInSamples > 0 && i < fadeInSamples) {
+      val *= i / fadeInSamples;
+    } else if (fadeOutSamples > 0 && i >= sampleCount - fadeOutSamples) {
+      const rem = sampleCount - 1 - i;
+      val *= 0.5 * (1 - Math.cos((Math.PI * rem) / fadeOutSamples));
+    }
+
     const intSample = Math.max(-32767, Math.min(32767, Math.round(val * 32767)));
     outBuffer.writeInt16LE(intSample, i * 2);
   }
@@ -250,13 +333,9 @@ async function getOrSynthesizeTtsWav(text, voiceName = 'Aoede', apiKey = DEFAULT
       }
 
       const rawBuffer = Buffer.from(audioPart.data, 'base64');
-      const mime = (audioPart.mimeType || '').toLowerCase();
-      const hasRiffHeader =
-        (mime.includes('wav') || rawBuffer.slice(0, 4).toString('ascii') === 'RIFF') &&
-        rawBuffer.length > 44;
-      const rawPcm = hasRiffHeader ? rawBuffer.subarray(44) : rawBuffer;
+      const { pcmBuffer: rawPcm, sampleRate, numChannels } = extractCleanPcm16FromAudioBuffer(rawBuffer);
       const normalizedPcm = normalizePcm16Buffer(rawPcm, 0.18);
-      const wavBuffer = pcm16ToWavBuffer(normalizedPcm, 24000, 1);
+      const wavBuffer = pcm16ToWavBuffer(normalizedPcm, sampleRate || 24000, numChannels || 1);
 
       // Keep cache bounded to 100 recent clips
       if (ttsWavCache.size >= 100) {
