@@ -33,6 +33,7 @@ import {
   generateStage2ConceptOffer,
   generateNextQuestionPrompt,
   analyzeStudentResponseAndEngagement,
+  verifyTalkingPointContinuity,
   detectSystemCommand,
   generateOfflineSocraticResponse
 } from './svs-engine.js';
@@ -53,11 +54,20 @@ class SocraticGeminiChatApp {
     this.lastHudLatex = '';
     this.lastGraphSpec = null;
 
-    // Section 16: Active Topic Anchor, Clue-Gathering & Engagement State
+    // Section 16: Active Topic Anchor, Clue-Gathering, Engagement & Talking-Point Verification State
     this.activeTopicAnchor = '';
     this.uncertaintyStreak = 0;
     this.lastTurnAskedForClue = false;
     this.gapAbortController = null;
+    this.talkingPointState = {
+      stepNumber: 0,
+      currentPointSummary: '',
+      currentQuestionAsked: '',
+      fullScriptText: '',
+      unspokenRemainderText: '',
+      scriptCompleted: true
+    };
+    this.lastVerificationResult = null;
 
     // Left-Side HUD Canvas Step Progression, Pinned Graph & Auto-Refresh State
     this.hudSteps = [];
@@ -96,13 +106,21 @@ class SocraticGeminiChatApp {
       onSpeechRecognized: (finalText) => {
         const input = document.getElementById('studentInput');
         if (input) input.value = '';
-        this.processStudentTransmission(finalText);
+        this.processStudentTransmission(finalText, { fromVoice: true });
       },
       onBotSpeakingChange: (speaking) => {
         this.isBotSpeaking = speaking;
         const stopBtn = document.getElementById('btnBargeIn');
         if (stopBtn) stopBtn.hidden = !speaking;
         this.updateMicStatusUI();
+
+        if (!speaking && this.talkingPointState) {
+          const prog = this.avionics.getScriptPlaybackProgress
+            ? this.avionics.getScriptPlaybackProgress()
+            : { unspokenRemainderText: '', scriptCompleted: true };
+          this.talkingPointState.unspokenRemainderText = prog.unspokenRemainderText || '';
+          this.talkingPointState.scriptCompleted = Boolean(prog.scriptCompleted);
+        }
 
         if (!speaking && this.hasActiveProblemTurn && this.delibStage < 2 && this.autoScratchpadPing) {
           this.startScratchpadDeliberationClock();
@@ -116,7 +134,7 @@ class SocraticGeminiChatApp {
 
     this.appendChatMessage(
       'svs',
-      'Hi! I am your Ontario STEM tutor (Grades 6–12) with a visual Left HUD Canvas for step progression & diagrams, interactive graphing, and step-by-step solution videos. Pick a starter problem below or ask any math or science question.',
+      'Hi! I am your Ontario STEM tutor (Grades 6–12). Ask any math or science question below or click Speak to start.',
       `${VOCAL_PROFILES[this.activeProfileKey].code} • ${FLIGHT_MODES[this.activeModeId].name}`,
       ''
     );
@@ -1079,6 +1097,7 @@ class SocraticGeminiChatApp {
 
   renderStarterChips() {
     const container = document.getElementById('scenarioChips');
+    if (!container) return;
     container.innerHTML = '';
 
     STEM_SCENARIOS.forEach((sc) => {
@@ -1096,7 +1115,37 @@ class SocraticGeminiChatApp {
     });
   }
 
-  async processStudentTransmission(utterance) {
+  async processStudentTransmission(utterance, options = { fromVoice: false }) {
+    const isFromVoice = Boolean(options?.fromVoice);
+
+    // Layer 0: If a voice event arrives while the tutor is speaking or in echo-mute cooldown, ignore it completely
+    if (isFromVoice && (this.isBotSpeaking || this.isMutedForEcho)) {
+      return;
+    }
+
+    // Layer 1: Talking-Point & Script Continuity Verification Layer
+    // Verifies whether a voice utterance is a late-phrase tail echo of the tutor's script BEFORE stopping speech,
+    // and snapshots any unread script remainder + current talking point so the tutor never skips or loses its place!
+    const scriptProgress = this.avionics.getScriptPlaybackProgress
+      ? this.avionics.getScriptPlaybackProgress()
+      : { unspokenRemainderText: '', scriptCompleted: true };
+
+    const verification = verifyTalkingPointContinuity({
+      utterance,
+      isFromVoice,
+      talkingPointState: {
+        ...this.talkingPointState,
+        unspokenRemainderText:
+          scriptProgress.unspokenRemainderText || this.talkingPointState?.unspokenRemainderText || ''
+      },
+      activeTopicAnchor: this.activeTopicAnchor || utterance
+    });
+
+    if (verification.shouldIgnoreAsEcho) {
+      return;
+    }
+    this.lastVerificationResult = verification;
+
     const pauseSeconds = this.getElapsedDeliberationSeconds();
     this.stopScratchpadDeliberationClock();
     this.isTimerPaused = false;
@@ -1262,8 +1311,9 @@ class SocraticGeminiChatApp {
   }
 
   /**
-   * Builds a concise, accurate summary of the current conversation session (including any pinned graph
-   * and the key points discussed so far) so the chatbot always retrieves and remembers prior context.
+   * Builds a concise, accurate summary of the current conversation session (including any pinned graph,
+   * the key points discussed so far, and the verified current talking point) so the chatbot always
+   * retrieves and remembers prior context.
    */
   buildSessionMemoryContext() {
     const lines = [];
@@ -1272,6 +1322,13 @@ class SocraticGeminiChatApp {
     }
     if (this.lastHudLatex) {
       lines.push(`- Latest HUD Equation / State: ${this.lastHudLatex}`);
+    }
+    if (this.talkingPointState?.currentPointSummary) {
+      lines.push(
+        `- Verified Current Talking Point (Step ${this.talkingPointState.stepNumber || 1}): ${
+          this.talkingPointState.currentPointSummary
+        } | Question Asked: "${this.talkingPointState.currentQuestionAsked || ''}"`
+      );
     }
     if (this.lastGraphSpec && Array.isArray(this.lastGraphSpec.functions)) {
       const fnLabels = this.lastGraphSpec.functions
@@ -1319,13 +1376,14 @@ class SocraticGeminiChatApp {
     }
 
     const sessionMemoryBlock = this.buildSessionMemoryContext();
+    const verificationBlock = this.lastVerificationResult?.verificationDirective || '';
 
     const pauseContext =
       pauseSeconds >= 5
         ? `[Student Deliberation Pause: ${pauseSeconds.toFixed(1)}s | Previous Step Tier: ${tierObj.tier} (t_expected=${tierObj.expectedSec}s)]\n`
         : '';
 
-    const annotatedMessage = `${sessionMemoryBlock}${diagnosticDirective}${engagement.directive}\n${pauseContext}Student message: ${utterance}`;
+    const annotatedMessage = `${sessionMemoryBlock}${verificationBlock}${diagnosticDirective}${engagement.directive}\n${pauseContext}Student message: ${utterance}`;
     const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
 
     // Send up to 24 recent turns (12 full exchanges) so the chatbot remembers the full current session
@@ -1595,27 +1653,35 @@ class SocraticGeminiChatApp {
   }
 
   /**
-   * Resets the Left-Side HUD Canvas Panel to a clean state
+   * Resets the Left-Side HUD Canvas Panel and Top Active Problem Bar to a clean state
    */
   resetHudCanvasUI(statusText = 'Ready for Next Question') {
     this.hudSteps = [];
     this.hudShouldRefreshOnNextQuestion = false;
     this.lastGraphSpec = null;
     this.lastPinnedGraphSignature = '';
+    this.talkingPointState = {
+      stepNumber: 0,
+      currentPointSummary: '',
+      currentQuestionAsked: '',
+      fullScriptText: '',
+      unspokenRemainderText: '',
+      scriptCompleted: true
+    };
 
     const statusBadge = document.getElementById('hudSessionStatusBadge');
     const topicTitle = document.getElementById('hudTopicTitle');
-    const qText = document.getElementById('hudCurrentQuestionText');
+    const talkingPill = document.getElementById('topTalkingPointPill');
     const diagSection = document.getElementById('hudDiagramSection');
 
     if (statusBadge) statusBadge.textContent = statusText;
     if (topicTitle) {
-      topicTitle.textContent = 'Select a starter problem or ask any Grade 6–12 STEM question to begin.';
+      topicTitle.textContent = 'Ask any math or science question to begin';
+    }
+    if (talkingPill) {
+      talkingPill.textContent = 'Step 1 • Ready';
     }
     this.updatePinnedLiveHud('\\text{Ready: Ask any math or science question!}', 0.2);
-    if (qText) {
-      qText.textContent = 'What math or science question would you like to explore today?';
-    }
     if (diagSection) {
       diagSection.hidden = true;
     }
@@ -1631,27 +1697,33 @@ class SocraticGeminiChatApp {
     this.hudSteps = [];
     this.hudShouldRefreshOnNextQuestion = true;
     this.lastPinnedGraphSignature = '';
+    this.talkingPointState = {
+      stepNumber: 0,
+      currentPointSummary: 'Question Complete — Solution Video Offer',
+      currentQuestionAsked: extractVisualQuestionFromSpoken(videoOfferPrompt),
+      fullScriptText: videoOfferPrompt || '',
+      unspokenRemainderText: '',
+      scriptCompleted: true
+    };
 
     const statusBadge = document.getElementById('hudSessionStatusBadge');
     const topicTitle = document.getElementById('hudTopicTitle');
-    const qText = document.getElementById('hudCurrentQuestionText');
+    const talkingPill = document.getElementById('topTalkingPointPill');
     const diagSection = document.getElementById('hudDiagramSection');
 
     if (statusBadge) {
       statusBadge.textContent = 'Question Complete • HUD Refreshed';
     }
     if (topicTitle) {
-      topicTitle.textContent = 'Question finished! HUD Canvas refreshed and ready for your next question.';
+      topicTitle.textContent = 'Question complete — ask a new question anytime';
+    }
+    if (talkingPill) {
+      talkingPill.textContent = 'Complete ✓';
     }
     this.updatePinnedLiveHud(
       '\\text{Question Complete } \\checkmark \\quad (\\text{Ready for Next Question})',
       0.2
     );
-    if (qText) {
-      qText.textContent =
-        extractVisualQuestionFromSpoken(videoOfferPrompt) ||
-        'Would you like to watch the step-by-step solution video, or start a new question?';
-    }
     if (diagSection) {
       diagSection.hidden = true;
     }
@@ -1660,11 +1732,11 @@ class SocraticGeminiChatApp {
   }
 
   /**
-   * Updates the Left-Side HUD Canvas with:
-   *  1. The explicit active problem/topic,
-   *  2. The current step's `<hud>` equation/example,
-   *  3. The exact question currently being asked visually,
-   *  4. The optional Elementary / Concept Visual Aid Diagram (only when needed), and
+   * Updates the Top Single-Line Active Problem Bar and the Left-Side HUD Canvas:
+   *  1. Single-line initial question of the session in `#hudTopicTitle` (at the top of the chat window),
+   *  2. Verified current talking-point state (`this.talkingPointState` + `#topTalkingPointPill`),
+   *  3. Clean `<hud>` formula display,
+   *  4. Optional Elementary / Concept Visual Aid Diagram (only when needed), and
    *  5. Concise Key-Points-Only Step Progression for quick reading.
    */
   updateLeftHudCanvas({
@@ -1678,17 +1750,18 @@ class SocraticGeminiChatApp {
   } = {}) {
     const statusBadge = document.getElementById('hudSessionStatusBadge');
     const topicTitle = document.getElementById('hudTopicTitle');
-    const qText = document.getElementById('hudCurrentQuestionText');
+    const talkingPill = document.getElementById('topTalkingPointPill');
     const diagSection = document.getElementById('hudDiagramSection');
     const diagTitle = document.getElementById('hudDiagramTitle');
     const diagCanvas = document.getElementById('hudDiagramCanvas');
     const diagCaption = document.getElementById('hudDiagramCaption');
 
-    const cleanTopic = String(topicText || this.activeTopicAnchor || 'Active STEM Problem')
+    const cleanTopic = String(this.activeTopicAnchor || topicText || 'Active STEM Problem')
       .replace(/\$/g, '')
+      .replace(/\s+/g, ' ')
       .trim();
     if (topicTitle && cleanTopic) {
-      topicTitle.textContent = `Main Problem: ${cleanTopic}`;
+      topicTitle.textContent = cleanTopic;
     }
 
     const effectiveLatex =
@@ -1697,13 +1770,10 @@ class SocraticGeminiChatApp {
     this.updatePinnedLiveHud(effectiveLatex, elapsedMs);
 
     const cleanQuestion = String(
-      questionText || 'What do you think our next step is?'
+      questionText || extractVisualQuestionFromSpoken(spokenText) || 'What do you think our next step is?'
     )
       .replace(/\$/g, '')
       .trim();
-    if (qText) {
-      qText.textContent = cleanQuestion;
-    }
 
     // Show Visual Aid Diagram ONLY when necessary and deemed to improve student's understanding
     if (diagramSpec && diagSection && diagCanvas) {
@@ -1742,8 +1812,23 @@ class SocraticGeminiChatApp {
       }
     }
 
+    // Update the Talking-Point Verification Layer state so the tutor always verifies what point it is talking about
+    const activeStepNum = this.hudSteps.length || 1;
+    this.talkingPointState = {
+      stepNumber: activeStepNum,
+      currentPointSummary: `${keyMathLatex} (${keyPointText})`,
+      currentQuestionAsked: cleanQuestion,
+      fullScriptText: String(spokenText || cleanQuestion || '').trim(),
+      unspokenRemainderText: '',
+      scriptCompleted: false
+    };
+
+    if (talkingPill) {
+      talkingPill.textContent = `Step ${activeStepNum} • ${keyPointText}`;
+    }
+
     if (statusBadge) {
-      statusBadge.textContent = `Active Problem • ${this.hudSteps.length} Key ${
+      statusBadge.textContent = `${this.hudSteps.length} Key ${
         this.hudSteps.length === 1 ? 'Point' : 'Points'
       }`;
     }
@@ -2363,23 +2448,20 @@ class SocraticGeminiChatApp {
 
       if (instrBanner && instrIcon && instrTitle && instrText) {
         if (this.isBotSpeaking) {
+          instrBanner.hidden = false;
           instrBanner.className = 'mic-instruction-banner muted-wait';
           instrIcon.textContent = '🔊';
-          instrTitle.textContent = 'Tutor Explaining Concept:';
+          instrTitle.textContent = 'Tutor Explaining:';
           instrText.textContent =
-            'Please wait until the tutor finishes speaking before intervening (or click "■ Stop Speaking" to interrupt).';
+            'Please wait until the tutor finishes speaking before answering.';
         } else {
-          instrBanner.className = 'mic-instruction-banner idle';
-          instrIcon.textContent = '🎤';
-          instrTitle.textContent = 'Voice Turn-Taking Guide:';
-          instrText.textContent =
-            'Click "Speak" to enable your microphone. While the tutor explains concepts, the mic auto-mutes to prevent speaker echo—wait for the green "Speak Now" banner before talking.';
+          instrBanner.hidden = true;
         }
       }
       if (studentInput) {
         studentInput.placeholder = this.isBotSpeaking
           ? '🔊 Tutor is explaining — please wait for voice to finish or type your response...'
-          : "Ask any STEM question, ask to 'graph y = ...', or click Speak to use your voice...";
+          : 'Ask any math or science question, or click Speak to talk...';
       }
       return;
     }
@@ -2388,37 +2470,39 @@ class SocraticGeminiChatApp {
       btnToggleMic.className = 'mic-pill-btn echo-paused';
       micBtnLabel.textContent = 'Mic Paused';
       statusDot.className = 'status-dot muted-echo';
-      vadStateTag.textContent = 'Tutor speaking — microphone auto-muted to prevent speaker echo';
+      vadStateTag.textContent = 'Tutor speaking — mic auto-muted to prevent echo';
 
       if (instrBanner && instrIcon && instrTitle && instrText) {
+        instrBanner.hidden = false;
         instrBanner.className = 'mic-instruction-banner muted-wait';
         instrIcon.textContent = '🔇';
-        instrTitle.textContent = 'Mic Auto-Muted While Tutor Explains — Please Hold Your Voice:';
+        instrTitle.textContent = 'Mic Muted While Tutor Speaks:';
         instrText.textContent =
-          'To prevent speaker feedback, your mic is muted while the tutor speaks. Please wait until the voice finishes before speaking (or click "■ Stop Speaking" to interrupt).';
+          'Wait until the voice finishes before speaking (or click "■ Stop Speaking").';
       }
       if (studentInput) {
         studentInput.placeholder =
-          '🔇 Mic auto-muted while tutor speaks — please wait until explanation finishes before speaking...';
+          '🔇 Mic auto-muted while tutor speaks — wait until explanation finishes...';
       }
     } else {
       btnToggleMic.className = 'mic-pill-btn active';
       micBtnLabel.textContent = 'Listening';
       statusDot.className = 'status-dot listening';
       vadStateTag.textContent = this.isUserSpeaking
-        ? 'Hearing you speak — smart pause detector active...'
-        : 'Mic active & ready — speak now (2.4s smart pause detector)...';
+        ? 'Hearing you speak...'
+        : 'Mic active & ready — speak now';
 
       if (instrBanner && instrIcon && instrTitle && instrText) {
+        instrBanner.hidden = false;
         instrBanner.className = 'mic-instruction-banner ready-listen';
         instrIcon.textContent = '🟢';
-        instrTitle.textContent = 'Mic Ready — Speak Now!';
+        instrTitle.textContent = 'Speak Now:';
         instrText.textContent = this.isUserSpeaking
           ? 'Hearing your voice clearly — keep speaking at your own pace.'
-          : 'Tutor has finished speaking. Your microphone is live and will pick up your very first word immediately.';
+          : 'Tutor finished speaking — your microphone is live.';
       }
       if (studentInput) {
-        studentInput.placeholder = '🟢 Mic is active & listening — Speak now, or type your response here...';
+        studentInput.placeholder = '🟢 Mic is active & listening — Speak now, or type your response...';
       }
     }
   }

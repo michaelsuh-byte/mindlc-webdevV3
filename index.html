@@ -52,14 +52,14 @@
 
     <!-- MAIN WORKSPACE -->
     <div class="main-workspace" id="mainWorkspace">
-      <!-- LEFT-SIDE VISUAL HUD CANVAS PANEL (CHANNEL 1: QUESTION, DIAGRAM & STEP PROGRESSION) -->
+      <!-- LEFT-SIDE VISUAL HUD CANVAS PANEL (CLEAN FORMULA, PINNED GRAPH/DIAGRAM & KEY POINTS) -->
       <aside class="hud-canvas-panel" id="hudCanvasPanel" aria-label="Visual HUD and Step Progression Canvas">
         <div class="hud-canvas-header">
           <div class="hud-canvas-title-wrap">
             <span class="hud-canvas-icon">📐</span>
             <div>
               <h2>Visual HUD Canvas</h2>
-              <span class="hud-canvas-sub" id="hudSessionStatusBadge">Active Problem &amp; Step Progression</span>
+              <span class="hud-canvas-sub" id="hudSessionStatusBadge">Ready for Question</span>
             </div>
           </div>
           <button
@@ -72,15 +72,11 @@
           </button>
         </div>
 
-        <!-- 1. EXPLICIT ACTIVE PROBLEM, EQUATION & VISUAL QUESTION CARD -->
+        <!-- 1. CLEAN CURRENT FORMULA / STEP EQUATION CARD -->
         <section class="hud-active-question-card" id="hudActiveQuestionCard">
           <div class="hud-card-top-row">
-            <span class="hud-channel-badge">ACTIVE PROBLEM / EXAMPLE</span>
+            <span class="hud-channel-badge">CURRENT STEP FORMULA</span>
             <span class="hud-latency-tag" id="hudRenderLatency">0.2 ms</span>
-          </div>
-
-          <div class="hud-topic-title" id="hudTopicTitle">
-            Select a starter problem or ask any Grade 6–12 STEM question to begin.
           </div>
 
           <!-- KaTeX Equation / Example Display -->
@@ -88,14 +84,6 @@
             <div class="live-hud-equation" id="liveHudEquation">
               \text{Ready: Ask any math or science question!}
             </div>
-          </div>
-
-          <!-- Explicit Visual Question Box (Always shows what the tutor is currently asking) -->
-          <div class="hud-current-prompt-box" id="hudCurrentPromptBox">
-            <span class="hud-prompt-label">🎯 QUESTION BEING ASKED NOW:</span>
-            <p class="hud-current-question-text" id="hudCurrentQuestionText">
-              What math or science question would you like to explore today?
-            </p>
           </div>
         </section>
 
@@ -136,8 +124,17 @@
 
       <!-- WIDER GEMINI CHAT WINDOW -->
       <main class="chat-column">
-        <!-- COMPACT SINGLE-LINE TELEMETRY & TIMER CONTROLS STRIP -->
-        <section class="scratchpad-telemetry-strip" id="scratchpadStrip">
+        <!-- SINGLE-LINE INITIAL QUESTION BAR (REPLACES VISIBLE TIMER BAR AT TOP OF CHAT) -->
+        <section class="top-active-problem-bar" id="topActiveProblemBar" aria-label="Active Session Question">
+          <span class="top-problem-badge">📌 Active Problem</span>
+          <span class="top-problem-text" id="hudTopicTitle">Ask any math or science question to begin</span>
+          <span class="top-talking-point-pill" id="topTalkingPointPill" title="Verified current talking point">
+            Step 1 • Ready
+          </span>
+        </section>
+
+        <!-- BACKGROUND DELIBERATION TIMER STRIP (HIDDEN FROM USER VIEW, RUNS IN BACKGROUND) -->
+        <section class="scratchpad-telemetry-strip" id="scratchpadStrip" hidden aria-hidden="true">
           <div class="strip-item">
             <span class="strip-label">TIER</span>
             <strong class="strip-val" id="stripTierBadge">TIER 1 (15s)</strong>
@@ -158,7 +155,6 @@
             </div>
           </div>
 
-          <!-- DIRECT TIMER STOP / PAUSE CONTROLS -->
           <div class="timer-controls-group">
             <button
               type="button"
@@ -186,25 +182,18 @@
 
         <!-- LARGE SCROLLABLE CHAT FEED -->
         <div class="chat-scroll-area" id="commsLog" aria-live="polite">
-          <!-- Messages, Interactive Graphs, and Manim Videos rendered here -->
-        </div>
-
-        <!-- COMPACT STARTER PROMPTS BAR -->
-        <div class="starter-prompts-bar">
-          <div class="starter-chips" id="scenarioChips">
-            <!-- Populated by app.js -->
-          </div>
+          <!-- Messages, Interactive Graphs, and Step-by-Step Solution Videos rendered here -->
         </div>
 
         <!-- BOTTOM GEMINI PILL INPUT BAR -->
         <div class="input-dock">
-          <!-- PROMINENT TURN-TAKING / SPEAKER ECHO-MUTE USER INSTRUCTION BANNER -->
-          <div class="mic-instruction-banner idle" id="micTurnInstructionBanner" role="status" aria-live="polite">
+          <!-- COMPACT SINGLE-LINE VOICE TURN-TAKING BANNER (SHOWN WHEN MIC OR VOICE IS ACTIVE) -->
+          <div class="mic-instruction-banner idle" id="micTurnInstructionBanner" role="status" aria-live="polite" hidden>
             <span class="mic-instr-icon" id="micInstrIcon">🎤</span>
             <div class="mic-instr-body">
-              <strong id="micInstrTitle">Voice Turn-Taking Guide:</strong>
+              <strong id="micInstrTitle">Voice Turn-Taking:</strong>
               <span id="micInstrText">
-                Click "Speak" to enable your microphone. While the tutor explains concepts, the mic auto-mutes to prevent speaker echo—please wait until the voice finishes before speaking.
+                Wait until the tutor finishes speaking before answering.
               </span>
             </div>
           </div>
@@ -251,7 +240,7 @@
             <input
               type="text"
               id="studentInput"
-              placeholder="Ask any STEM question, ask to 'graph y = ...', or speak a multi-step explanation..."
+              placeholder="Ask any math or science question, or click Speak to talk..."
               autocomplete="off"
             />
 

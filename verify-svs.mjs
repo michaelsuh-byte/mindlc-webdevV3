@@ -20,7 +20,8 @@ import {
   ensureExplicitHudLatex,
   summarizeStepKeyPoint,
   isInteractiveGraphNeeded,
-  inferElementaryDiagramIfHelpful
+  inferElementaryDiagramIfHelpful,
+  verifyTalkingPointContinuity
 } from './svs-engine.js';
 
 import { compileMathExpression, findCurveFeatures } from './graph-engine.js';
@@ -194,7 +195,7 @@ const calcRms = (buf) => {
 assert.equal(Math.abs(calcRms(normQuiet) - calcRms(normLoud)) < 0.03, true, 'Quiet and loud TTS clips are normalized to consistent RMS loudness');
 
 // 16. Verify Hard Mic Mute During Tutor Speech & Section 16 Topic Anchor / Clue-Gathering Gap Discovery
-assert.equal(testAvionics.echoTailMs, 800, 'Echo cooldown tail is set to 800ms so OS speaker buffer & room reverb finish completely');
+assert.equal(testAvionics.echoTailMs, 1000, 'Echo cooldown tail is set to 1000ms (+250ms OS buffer flush) so speaker tail finishes completely');
 testAvionics.recordTutorSpokenFingerprint('Before doing the math, what graphical feature are we looking for when an equation equals zero?');
 assert.equal(
   testAvionics.isLikelyTutorEcho('what graphical feature are we looking for when an equation equals zero'),
@@ -306,4 +307,63 @@ const preservedOnFollowUp = buildFallbackGraphSpec(
 );
 assert.equal(preservedOnFollowUp.functions.length, 2, 'Existing session graph is preserved across follow-up turns without changing');
 
-console.log('ALL CONCISE KEY-POINT SUMMARY, WIDER HUD CANVAS, LOCKED/PERSISTENT GRAPH, AND SESSION MEMORY TESTS PASSED.');
+// 19. Verify Fuzzy End-of-Phrase Tail Echo Filtering & Talking-Point Verification Layer (`verifyTalkingPointContinuity`)
+testAvionics.recordTutorSpokenFingerprint(
+  'When this equation equals zero, what do we call the points where the curve crosses the flat horizontal x-axis?'
+);
+assert.equal(
+  testAvionics.isLikelyTutorEcho('horizontal axis'),
+  true,
+  'Fuzzy tail word/stem filter catches STT-altered end-of-phrase echo ("horizontal axis" from "flat horizontal x-axis")'
+);
+assert.equal(
+  testAvionics.stripTutorTailEcho('horizontal axis the x intercepts'),
+  'the x intercepts',
+  'Strips fuzzy tail echo prefix while keeping the student answer'
+);
+
+const echoGlitchCheck = verifyTalkingPointContinuity({
+  utterance: 'horizontal axis',
+  isFromVoice: true,
+  talkingPointState: {
+    stepNumber: 2,
+    currentPointSummary: '2x^2 - 8x = 0 (Height zero on horizontal x-axis)',
+    currentQuestionAsked: 'What do we call the points where the curve crosses the flat horizontal x-axis?',
+    fullScriptText:
+      'When this equation equals zero, the height y on the graph is zero—what do we call the points where the curve crosses the flat horizontal x-axis?',
+    unspokenRemainderText: ''
+  },
+  activeTopicAnchor: 'Solve 2x^2 - 8x = 0'
+});
+assert.equal(
+  echoGlitchCheck.shouldIgnoreAsEcho,
+  true,
+  'Talking-Point Verification Layer blocks late-phrase voice echo glitch before it can interrupt playback'
+);
+
+const validTurnVerification = verifyTalkingPointContinuity({
+  utterance: 'They are called the x-intercepts',
+  isFromVoice: true,
+  talkingPointState: {
+    stepNumber: 2,
+    currentPointSummary: '2x^2 - 8x = 0 (Height zero on horizontal x-axis)',
+    currentQuestionAsked: 'What do we call the points where the curve crosses the flat horizontal x-axis?',
+    fullScriptText:
+      'When this equation equals zero, the height y on the graph is zero—what do we call the points where the curve crosses the flat horizontal x-axis?',
+    unspokenRemainderText: 'what do we call the points where the curve crosses the flat horizontal x-axis?'
+  },
+  activeTopicAnchor: 'Solve 2x^2 - 8x = 0'
+});
+assert.equal(validTurnVerification.shouldIgnoreAsEcho, false, 'Allows genuine student turn');
+assert.equal(
+  validTurnVerification.verificationDirective.includes('TALKING-POINT VERIFICATION LAYER'),
+  true,
+  'Generates Talking-Point Verification Layer directive for the LLM'
+);
+assert.equal(
+  validTurnVerification.verificationDirective.includes('UNREAD SCRIPT RECOVERY'),
+  true,
+  'Includes unread script recovery directive if a clause was interrupted'
+);
+
+console.log('ALL TALKING-POINT VERIFICATION LAYER, FUZZY TAIL ECHO GUARD, AND SIMPLIFIED UI TESTS PASSED.');

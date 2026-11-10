@@ -1333,6 +1333,114 @@ export function splitSpokenTextIntoClauses(rawOrCleanText = '', maxWords = 30) {
   return [clean];
 }
 
+/**
+ * Talking-Point & Script Continuity Verification Layer:
+ *  1. Verifies whether an incoming voice transcript is actually a late-phrase speaker echo of the tutor's own script
+ *     (so a voice glitch never interrupts the tutor or causes it to skip/lose its place).
+ *  2. Verifies the exact talking point (`stepNumber`, `currentPointSummary`, `currentQuestionAsked`) and whether
+ *     any clause of the tutor's script was left unread (`unspokenRemainderText`), generating an explicit
+ *     `verificationDirective` so the chatbot never skips steps or loses where it was reading.
+ */
+export function verifyTalkingPointContinuity({
+  utterance = '',
+  isFromVoice = false,
+  talkingPointState = {},
+  activeTopicAnchor = ''
+} = {}) {
+  const raw = String(utterance || '').trim();
+  const fullScript = String(talkingPointState?.fullScriptText || '').trim();
+  const currentQuestion = String(talkingPointState?.currentQuestionAsked || '').trim();
+  const currentPointSummary = String(talkingPointState?.currentPointSummary || '').trim();
+  const unspokenRemainder = String(talkingPointState?.unspokenRemainderText || '').trim();
+  const stepNumber = Number(talkingPointState?.stepNumber) || 1;
+
+  const normCandidate = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const candidateWords = normCandidate.split(' ').filter(Boolean);
+
+  // 1. Check if a voice transmission is a late-phrase echo of the tutor's current script
+  if (isFromVoice && fullScript && candidateWords.length > 0) {
+    const isGenuineIntent =
+      /^(yes|yeah|yep|no|nope|nah|hint|help|wait|stop|i\s+dont\s+know|i\s+do\s+not\s+know|not\s+sure)$/i.test(
+        normCandidate
+      );
+
+    if (!isGenuineIntent) {
+      const normScript = fullScript
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const scriptWords = normScript.split(' ').filter(Boolean);
+      const tailWords = scriptWords.slice(-10);
+      const tailNorm = tailWords.join(' ');
+      const tailSet = new Set(tailWords.filter(w => w.length >= 2));
+      const tailStems = new Set(tailWords.filter(w => w.length >= 4).map(w => w.slice(0, 4)));
+
+      if (normScript.endsWith(normCandidate) || (tailNorm && tailNorm.includes(normCandidate))) {
+        return {
+          shouldIgnoreAsEcho: true,
+          reason: 'EXACT_TAIL_SCRIPT_ECHO',
+          verificationDirective: ''
+        };
+      }
+
+      if (candidateWords.length <= 5) {
+        let matches = 0;
+        let stemMatches = 0;
+        for (const w of candidateWords) {
+          if (tailSet.has(w)) matches++;
+          else if (w.length >= 4 && tailStems.has(w.slice(0, 4))) {
+            matches++;
+            stemMatches++;
+          }
+          if (w.length >= 4 && tailStems.has(w.slice(0, 4))) {
+            stemMatches++;
+          }
+        }
+        if (
+          (candidateWords.length === 1 && candidateWords[0].length >= 4 && stemMatches === 1) ||
+          (candidateWords.length >= 2 &&
+            matches / candidateWords.length >= 0.6 &&
+            (matches >= 2 || stemMatches >= 1))
+        ) {
+          return {
+            shouldIgnoreAsEcho: true,
+            reason: 'FUZZY_TAIL_SCRIPT_ECHO',
+            verificationDirective: ''
+          };
+        }
+      }
+    }
+  }
+
+  // 2. Build the Talking-Point Verification Directive so the chatbot always verifies what point it is talking about
+  const topicLabel = activeTopicAnchor || 'Current STEM Problem';
+  const pointLabel = currentPointSummary || 'Foundational Concept Check';
+  const questionLabel = currentQuestion || fullScript || 'Initial problem setup';
+
+  const recoveryNote = unspokenRemainder
+    ? `\n3. UNREAD SCRIPT RECOVERY: Your previous spoken explanation had an unread remainder ("${unspokenRemainder}"). Smoothly incorporate that point so zero part of the script is skipped.`
+    : '';
+
+  const verificationDirective = fullScript
+    ? `[TALKING-POINT VERIFICATION LAYER — Active Problem: "${topicLabel}" | Current Talking Point (Step ${stepNumber}): "${pointLabel}" | Exact Question Just Asked: "${questionLabel}"]:\n1. VERIFY CURRENT POINT: Confirm how the student's reply ("${raw}") addresses Step ${stepNumber} ("${pointLabel}") and the exact question "${questionLabel}".\n2. DO NOT SKIP STEPS OR LOSE PLACE: Stay anchored on Step ${stepNumber} until it is resolved; never skip ahead in the script or jump to an unrelated step.${recoveryNote}\n`
+    : `[TALKING-POINT VERIFICATION LAYER — Active Problem: "${topicLabel}" | Step 1 Initialization]: Verify the core concept and start at Step 1 without skipping foundational ground.\n`;
+
+  return {
+    shouldIgnoreAsEcho: false,
+    reason: 'VALID_STUDENT_TURN',
+    stepNumber,
+    currentPointSummary: pointLabel,
+    currentQuestionAsked: questionLabel,
+    needsScriptCompletion: Boolean(unspokenRemainder),
+    verificationDirective
+  };
+}
+
 export function detectSystemCommand(utterance) {
   const norm = utterance.toLowerCase().trim();
   const modeMatch = norm.match(/\b(?:switch\s+to\s+|change\s+to\s+|set\s+)?mode\s+(1|2|3|4|one|two|three|four)\b/i);

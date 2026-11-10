@@ -47,8 +47,9 @@ export class AudioAvionicsController {
     // Speaker Echo Protection parameters
     this.echoProtectionEnabled = true;
     this.echoCooldownUntil = 0;
-    this.echoTailMs = 800;
+    this.echoTailMs = 1000;
     this.botSpeechEndedTimestamp = 0;
+    this.lastBotSpeechEndTime = 0;
 
     this.isMicActive = false;
     this.isUserSpeaking = false;
@@ -56,6 +57,13 @@ export class AudioAvionicsController {
     this.lastVoiceActivityTime = 0;
     this.lastSpeechEventTimestamp = 0;
     this.resumeMicTimer = null;
+    this.micSettleTimer = null;
+
+    // Script Playback & Talking-Point Verification State
+    this.speechGenerationId = 0;
+    this.activeScriptClauses = [];
+    this.activeClauseIndex = 0;
+    this.unspokenRemainderText = '';
 
     // Adjustable voice parameters (default speaking speed set to 1.1x)
     this.customRateMultiplier = 1.1;
@@ -72,6 +80,8 @@ export class AudioAvionicsController {
     this.lastTutorSpokenWords = new Set();
     this.lastTutorTailNormalized = '';
     this.lastTutorTailWordsList = [];
+    this.lastTutorTailWordSet = new Set();
+    this.lastTutorTailStems = new Set();
     this.finalizedTranscript = '';
     this.currentInterimTranscript = '';
     this.vadDataArray = null;
@@ -167,8 +177,8 @@ export class AudioAvionicsController {
   }
 
   /**
-   * Records the tutor's spoken text AND specifically the tail (last 8 words) of the sentence
-   * so any late speaker bleed of the final word or phrase is stripped or rejected immediately.
+   * Records the tutor's spoken text AND specifically the tail (last 10 words + 4-char word stems) of the sentence
+   * so any late speaker bleed of the final word or phrase is stripped or rejected immediately—even if STT alters a word slightly.
    */
   recordTutorSpokenFingerprint(text = '') {
     const stopWords = new Set([
@@ -185,12 +195,33 @@ export class AudioAvionicsController {
     this.lastTutorSpokenNormalized = norm;
     const allWords = norm.split(' ').filter(Boolean);
     this.lastTutorSpokenWords = new Set(allWords.filter(w => w.length >= 4 && !stopWords.has(w)));
-    this.lastTutorTailWordsList = allWords.slice(-8);
+    this.lastTutorTailWordsList = allWords.slice(-10);
     this.lastTutorTailNormalized = this.lastTutorTailWordsList.join(' ');
+    this.lastTutorTailWordSet = new Set(this.lastTutorTailWordsList.filter(w => w.length >= 2));
+    this.lastTutorTailStems = new Set(
+      this.lastTutorTailWordsList
+        .filter(w => w.length >= 4 && !stopWords.has(w))
+        .map(w => w.slice(0, 4))
+    );
   }
 
   /**
-   * Strips any leading words (or the entire phrase) if they match the last word/phrase of the tutor's speech.
+   * Returns current script playback status so the Talking-Point Verification Layer can verify
+   * whether the chatbot finished reading its script or what clause remained unread.
+   */
+  getScriptPlaybackProgress() {
+    return {
+      isBotSpeaking: this.isBotSpeaking,
+      totalClauses: this.activeScriptClauses.length,
+      completedClauses: this.activeClauseIndex,
+      unspokenRemainderText: this.unspokenRemainderText || '',
+      scriptCompleted: !this.unspokenRemainderText
+    };
+  }
+
+  /**
+   * Strips any leading words (or the entire phrase) if they match the last word/phrase of the tutor's speech,
+   * including fuzzy word/stem overlap for 1–5 word tail echoes towards the end of the tutor's phrase.
    */
   stripTutorTailEcho(candidateText = '') {
     const raw = String(candidateText || '').trim();
@@ -212,43 +243,92 @@ export class AudioAvionicsController {
       return '';
     }
 
-    // 2. Any 3+ word phrase contained verbatim anywhere in the tutor's last burst
+    // 2. Fuzzy tail word & stem overlap for short 1–4 word echoes (e.g. "flat horizontal x-axis" -> STT hears "horizontal axis")
+    if (normWords.length <= 4 && (this.lastTutorTailWordSet.size > 0 || this.lastTutorTailStems.size > 0)) {
+      // Do not strip genuine standalone student answers like "yes", "no", "i dont know", or pure numbers not in the tail
+      const isStudentIntentPhrase =
+        /^(yes|yeah|yep|no|nope|nah|hint|help|wait|stop|i\s+dont\s+know|i\s+do\s+not\s+know|not\s+sure)$/i.test(
+          fullNorm
+        );
+      if (!isStudentIntentPhrase) {
+        let tailMatches = 0;
+        let contentStemMatches = 0;
+        let unmatchedContentWords = 0;
+        for (const w of normWords) {
+          const inTailWord = this.lastTutorTailWordSet.has(w);
+          const inTailStem = w.length >= 4 && this.lastTutorTailStems.has(w.slice(0, 4));
+          if (inTailWord || inTailStem) {
+            tailMatches++;
+          } else if (w.length >= 4) {
+            unmatchedContentWords++;
+          }
+          if (inTailStem) {
+            contentStemMatches++;
+          }
+        }
+        // Single content word at the very end of the tutor's phrase (e.g. "intercepts" / "downward" / "balanced")
+        if (normWords.length === 1 && normWords[0].length >= 4 && contentStemMatches === 1) {
+          return '';
+        }
+        // 2–4 word phrase where >= 75% of words match the tutor's last 10 words and zero new content words appear
+        if (
+          normWords.length >= 2 &&
+          unmatchedContentWords === 0 &&
+          tailMatches / normWords.length >= 0.75 &&
+          (tailMatches >= 2 || contentStemMatches >= 1)
+        ) {
+          return '';
+        }
+      }
+    }
+
+    // 3. Any 3+ word phrase contained verbatim anywhere in the tutor's last burst
     if (normWords.length >= 3 && this.lastTutorSpokenNormalized.includes(fullNorm)) {
       return '';
     }
 
-    // 3. If the recognized string starts with 1–6 words from the tail of the tutor's sentence followed by user speech,
+    // 4. If the recognized string starts with 1–6 words from the tail of the tutor's sentence followed by user speech,
     // strip the leading tail echo words first and keep the user's words!
     let remainingRawWords = rawWords;
     if (this.lastTutorTailWordsList.length > 0 && rawWords.length > 1) {
+      const articles = new Set(['the', 'a', 'an', 'it', 'is', 'my', 'our']);
       for (let prefixLen = Math.min(6, rawWords.length - 1); prefixLen >= 1; prefixLen--) {
-        const prefixNorm = rawWords
+        const prefixWords = rawWords
           .slice(0, prefixLen)
           .map(w => w.toLowerCase().replace(/[^a-z0-9]/g, ''))
-          .filter(Boolean)
-          .join(' ');
-        if (
+          .filter(Boolean);
+        const prefixNorm = prefixWords.join(' ');
+        const lastPrefixWord = prefixWords[prefixWords.length - 1] || '';
+        const exactPrefixMatch =
           prefixNorm &&
           (this.lastTutorSpokenNormalized.endsWith(prefixNorm) ||
-            (prefixLen >= 2 && this.lastTutorTailNormalized.includes(prefixNorm)))
-        ) {
+            (prefixLen >= 2 &&
+              !articles.has(lastPrefixWord) &&
+              this.lastTutorTailNormalized.includes(prefixNorm)));
+        const fuzzyPrefixMatch =
+          prefixWords.length >= 2 &&
+          !articles.has(lastPrefixWord) &&
+          prefixWords.every(
+            w => this.lastTutorTailWordSet.has(w) || (w.length >= 4 && this.lastTutorTailStems.has(w.slice(0, 4)))
+          );
+        if (exactPrefixMatch || fuzzyPrefixMatch) {
           remainingRawWords = rawWords.slice(prefixLen);
           break;
         }
       }
     }
 
-    // 4. High content-word overlap check on the remaining words
+    // 5. High content-word overlap check on the remaining words
     const remNormWords = remainingRawWords
       .map(w => w.toLowerCase().replace(/[^a-z0-9]/g, ''))
       .filter(Boolean);
     const sigWords = remNormWords.filter(w => w.length >= 4);
-    if (sigWords.length >= 4 && this.lastTutorSpokenWords.size > 0) {
+    if (sigWords.length >= 3 && this.lastTutorSpokenWords.size > 0) {
       let matches = 0;
       for (const w of sigWords) {
-        if (this.lastTutorSpokenWords.has(w)) matches++;
+        if (this.lastTutorSpokenWords.has(w) || this.lastTutorTailStems.has(w.slice(0, 4))) matches++;
       }
-      if (matches / sigWords.length >= 0.75) {
+      if (matches / sigWords.length >= 0.7) {
         return '';
       }
     }
@@ -272,6 +352,7 @@ export class AudioAvionicsController {
    */
   destroyRecognitionInstance() {
     clearTimeout(this.recognitionRestartTimer);
+    clearTimeout(this.micSettleTimer);
     this.isRecognitionRunning = false;
     if (this.recognition) {
       const rec = this.recognition;
@@ -292,6 +373,7 @@ export class AudioAvionicsController {
    */
   engageSpeakerEchoLock() {
     clearTimeout(this.resumeMicTimer);
+    clearTimeout(this.micSettleTimer);
     clearTimeout(this.recognitionRestartTimer);
     this.clearPendingTranscript();
     this.onInterimTranscript('');
@@ -318,18 +400,21 @@ export class AudioAvionicsController {
   }
 
   /**
-   * Releases the speaker echo lock after a brief 260ms room-reverb tail and creates a fresh
-   * SpeechRecognition instance so it starts cleanly without Chrome's aborted-instance state bug.
+   * Releases the speaker echo lock in two stages:
+   *  Stage A (echoTailMs = 1000ms): Keeps mic hardware track muted while room reverb & speaker tail drain.
+   *  Stage B (+250ms OS ring-buffer flush): Re-enables mic hardware track first, lets the OS audio buffer fill
+   *          with clean post-speaker silence for 250ms, and only THEN starts a fresh SpeechRecognition instance.
    */
   releaseSpeakerEchoLock() {
     clearTimeout(this.resumeMicTimer);
+    clearTimeout(this.micSettleTimer);
     this.clearPendingTranscript();
-    this.echoCooldownUntil = performance.now() + this.echoTailMs;
+    this.lastBotSpeechEndTime = performance.now();
+    this.echoCooldownUntil = this.lastBotSpeechEndTime + this.echoTailMs + 350;
 
     this.resumeMicTimer = setTimeout(() => {
       if (this.isBotSpeaking) return;
 
-      this.recognitionPausedForPlayback = false;
       this.clearPendingTranscript();
 
       if (this.micStream && this.isMicActive) {
@@ -338,16 +423,23 @@ export class AudioAvionicsController {
         });
       }
 
-      if (this.isMicActive) {
-        this.startWebSpeechRecognition();
-      }
+      // Wait 250ms after track.enabled = true so Chromium's OS audio ring-buffer flushes any tail
+      this.micSettleTimer = setTimeout(() => {
+        if (this.isBotSpeaking) return;
+        this.recognitionPausedForPlayback = false;
+        this.clearPendingTranscript();
 
-      this.onVadStateChange({
-        isSpeaking: false,
-        rms: 0,
-        silenceMs: 0,
-        isMutedForEcho: false
-      });
+        if (this.isMicActive) {
+          this.startWebSpeechRecognition();
+        }
+
+        this.onVadStateChange({
+          isSpeaking: false,
+          rms: 0,
+          silenceMs: 0,
+          isMutedForEcho: false
+        });
+      }, 250);
     }, this.echoTailMs);
   }
 
@@ -685,6 +777,7 @@ export class AudioAvionicsController {
    */
   async speakCalibratedBurst(cleanText, profileKey = 'CHARLIE', prewarmedAudio = null) {
     const startTs = performance.now();
+    const genId = ++this.speechGenerationId;
     this.stopSpeaking('NEW_BURST');
 
     const chunks =
@@ -693,6 +786,10 @@ export class AudioAvionicsController {
         : splitSpokenTextIntoClauses(cleanText, this.maxWords);
 
     if (chunks.length === 0) return;
+
+    this.activeScriptClauses = [...chunks];
+    this.activeClauseIndex = 0;
+    this.unspokenRemainderText = chunks.join(' ');
 
     this.recordTutorSpokenFingerprint(chunks.join(' '));
     this.isBotSpeaking = true;
@@ -706,19 +803,32 @@ export class AudioAvionicsController {
     try {
       // Prepare URL promises for all chunks in parallel:
       // Chunk 0 uses inline base64 audio from `/api/chat` when available (0ms network wait!)
+      // Attach `.catch(() => null)` so a transient error on chunk 1 is retried in-loop instead of rejecting unhandled
       const urlPromises = chunks.map((chunkText, idx) => {
         if (idx === 0 && prewarmedAudio?.firstChunkWavBase64) {
           return Promise.resolve(this.base64ToBlobUrl(prewarmedAudio.firstChunkWavBase64));
         }
-        return this.fetchTtsBlobUrl(chunkText, voiceName, abortCtrl.signal);
+        return this.fetchTtsBlobUrl(chunkText, voiceName, abortCtrl.signal).catch(() => null);
       });
 
-      for (let i = 0; i < urlPromises.length; i++) {
-        const audioUrl = await urlPromises[i];
-        if (abortCtrl.signal.aborted) {
-          URL.revokeObjectURL(audioUrl);
+      for (let i = 0; i < chunks.length; i++) {
+        if (abortCtrl.signal.aborted || genId !== this.speechGenerationId) {
           return;
         }
+
+        let audioUrl = await urlPromises[i];
+        if (!audioUrl && !abortCtrl.signal.aborted && genId === this.speechGenerationId) {
+          // Retry fetching this clause so the tutor never skips reading the rest of its script
+          audioUrl = await this.fetchTtsBlobUrl(chunks[i], voiceName, abortCtrl.signal);
+        }
+
+        if (abortCtrl.signal.aborted || genId !== this.speechGenerationId) {
+          if (audioUrl) URL.revokeObjectURL(audioUrl);
+          return;
+        }
+
+        // Record fingerprint of the currently playing clause as well so any tail bleed matches immediately
+        this.recordTutorSpokenFingerprint(chunks.slice(0, i + 1).join(' '));
 
         if (this.currentAudioUrl) {
           URL.revokeObjectURL(this.currentAudioUrl);
@@ -745,20 +855,25 @@ export class AudioAvionicsController {
             this.onBotSpeakingChange(true);
           };
 
-          audio.onended = () => resolve();
+          audio.onended = () => {
+            this.activeClauseIndex = i + 1;
+            this.unspokenRemainderText = chunks.slice(i + 1).join(' ').trim();
+            resolve();
+          };
           audio.onerror = (e) => reject(e);
 
           audio.play().catch(reject);
         });
       }
 
-      if (!abortCtrl.signal.aborted) {
+      if (!abortCtrl.signal.aborted && genId === this.speechGenerationId) {
+        this.unspokenRemainderText = '';
         this.isBotSpeaking = false;
         this.onBotSpeakingChange(false);
         this.releaseSpeakerEchoLock();
       }
     } catch (err) {
-      if (err?.name === 'AbortError' || abortCtrl.signal.aborted) return;
+      if (err?.name === 'AbortError' || abortCtrl.signal.aborted || genId !== this.speechGenerationId) return;
       console.warn('Studio Neural TTS error (generic browser voice fallback is strictly disabled):', err);
       this.isBotSpeaking = false;
       this.onBotSpeakingChange(false);

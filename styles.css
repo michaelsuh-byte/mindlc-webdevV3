@@ -434,7 +434,62 @@ body {
   overflow: hidden;
 }
 
-/* COMPACT SCRATCHPAD & DELIBERATION TELEMETRY STRIP */
+/* SINGLE-LINE INITIAL QUESTION BAR AT TOP OF CHAT (REPLACES VISIBLE TIMER BAR) */
+.top-active-problem-bar {
+  margin-top: 8px;
+  background: linear-gradient(145deg, rgba(28, 35, 51, 0.94), rgba(20, 24, 34, 0.96));
+  border: 1px solid rgba(168, 199, 250, 0.35);
+  border-radius: 10px;
+  padding: 7px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.top-problem-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-blue);
+  background: rgba(168, 199, 250, 0.14);
+  padding: 2px 9px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.top-problem-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #e8f0fe;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.top-talking-point-pill {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-green);
+  background: rgba(129, 201, 149, 0.12);
+  border: 1px solid rgba(129, 201, 149, 0.32);
+  padding: 2px 9px;
+  border-radius: 999px;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* COMPACT SCRATCHPAD & DELIBERATION TELEMETRY STRIP (HIDDEN IN BACKGROUND BY DEFAULT) */
+.scratchpad-telemetry-strip[hidden] {
+  display: none !important;
+}
+
 .scratchpad-telemetry-strip {
   margin-top: 6px;
   background: var(--bg-surface);
@@ -785,6 +840,10 @@ body {
 }
 
 /* PROMINENT TURN-TAKING / MIC AUTO-MUTE INSTRUCTION BANNER */
+.mic-instruction-banner[hidden] {
+  display: none !important;
+}
+
 .mic-instruction-banner {
   display: flex;
   align-items: center;
