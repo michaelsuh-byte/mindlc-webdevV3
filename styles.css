@@ -515,6 +515,60 @@ body {
   background: var(--accent-amber);
 }
 
+/* PROMINENT TURN-TAKING / MIC AUTO-MUTE INSTRUCTION BANNER */
+.mic-instruction-banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.35;
+  border: 1px solid var(--border-subtle);
+  background: rgba(24, 30, 44, 0.92);
+  color: var(--text-main);
+  transition: all 0.16s ease;
+}
+
+.mic-instruction-banner.idle {
+  border-color: rgba(168, 199, 250, 0.28);
+  background: rgba(22, 29, 44, 0.88);
+}
+
+.mic-instruction-banner.muted-wait {
+  border-color: rgba(253, 214, 99, 0.72);
+  background: rgba(58, 43, 14, 0.92);
+  color: #fef08a;
+  box-shadow: 0 0 12px rgba(253, 214, 99, 0.16);
+}
+
+.mic-instruction-banner.muted-wait strong {
+  color: #fde047;
+}
+
+.mic-instruction-banner.ready-listen {
+  border-color: rgba(129, 201, 149, 0.75);
+  background: rgba(16, 48, 30, 0.92);
+  color: #dcfce7;
+  box-shadow: 0 0 12px rgba(129, 201, 149, 0.16);
+}
+
+.mic-instruction-banner.ready-listen strong {
+  color: #86efac;
+}
+
+.mic-instr-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.mic-instr-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px;
+}
+
 .stop-voice-btn {
   margin-left: auto;
   background: rgba(242, 139, 130, 0.16);

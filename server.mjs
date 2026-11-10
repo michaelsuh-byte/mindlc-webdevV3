@@ -292,12 +292,19 @@ async function handleChatApi(req, res) {
     const { systemInstruction, history = [], message, voiceName = 'Aoede', maxWords = 30 } = body;
     const contents = [];
 
-    for (const turn of history.slice(-14)) {
+    for (const turn of history.slice(-8)) {
       if (turn && turn.text) {
-        contents.push({
-          role: turn.role === 'svs' ? 'model' : 'user',
-          parts: [{ text: turn.text }]
-        });
+        const compactTurnText = String(turn.text)
+          .replace(/<graph>[\s\S]*?<\/graph>/gi, '')
+          .replace(/<table_data>[\s\S]*?<\/table_data>/gi, '')
+          .replace(/<telemetry>[\s\S]*?<\/telemetry>/gi, '')
+          .trim();
+        if (compactTurnText) {
+          contents.push({
+            role: turn.role === 'svs' ? 'model' : 'user',
+            parts: [{ text: compactTurnText }]
+          });
+        }
       }
     }
 
@@ -310,13 +317,14 @@ async function handleChatApi(req, res) {
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(25000),
       body: JSON.stringify({
         systemInstruction: systemInstruction ? { parts: [{ text: systemInstruction }] } : undefined,
         contents,
         generationConfig: {
           thinkingConfig: { thinkingBudget: 0 },
           temperature: 0.45,
-          maxOutputTokens: 320
+          maxOutputTokens: 280
         }
       })
     });
@@ -344,13 +352,13 @@ async function handleChatApi(req, res) {
       try {
         const wavBuf = await Promise.race([
           chunk0Promise,
-          new Promise((_, reject) => setTimeout(() => reject(new Error('PREWARM_TIMEOUT')), 1750))
+          new Promise((_, reject) => setTimeout(() => reject(new Error('PREWARM_TIMEOUT')), 1150))
         ]);
         if (wavBuf) {
           firstChunkWavBase64 = wavBuf.toString('base64');
         }
       } catch (_) {
-        // If chunk 0 takes slightly longer than 1.75s, it remains in `inFlightTtsMap` so `/api/tts` awaits the rest of it
+        // If chunk 0 takes slightly longer than 1.15s, it remains in `inFlightTtsMap` so `/api/tts` awaits the rest of it
       }
     }
 

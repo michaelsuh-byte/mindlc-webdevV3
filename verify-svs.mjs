@@ -13,6 +13,7 @@ import {
   generateStage2ConceptOffer,
   generateNextQuestionPrompt,
   splitSpokenTextIntoClauses,
+  analyzeStudentResponseAndEngagement,
   generateOfflineSocraticResponse,
   buildSystemInstruction
 } from './svs-engine.js';
@@ -185,4 +186,32 @@ const calcRms = (buf) => {
 };
 assert.equal(Math.abs(calcRms(normQuiet) - calcRms(normLoud)) < 0.03, true, 'Quiet and loud TTS clips are normalized to consistent RMS loudness');
 
-console.log('ALL OPTION 4 ZERO-DELAY VOICE, SELECTIVE GRAPHING, CANVAS AUTO-FIT, AND VOLUME NORMALIZATION TESTS PASSED.');
+// 16. Verify Warm Mic Resume & Section 16 Topic Anchor / Clue-Gathering Gap Discovery
+assert.equal(testAvionics.echoTailMs, 180, 'Echo cooldown tail is set to 180ms for instant mic resume');
+assert.equal(sysPrompt.includes('16. TOPIC ANCHOR, CLUE-GATHERING GAP DISCOVERY & GROUND-UP LOGICAL FLOW'), true, 'System prompt includes Section 16 Topic Anchor & Clue-Gathering rules');
+
+const mcAnchor = 'What is a real-world application of fractions in Minecraft?';
+const idkProbe = analyzeStudentResponseAndEngagement("I don't know", {
+  activeTopicAnchor: mcAnchor,
+  uncertaintyStreak: 0,
+  lastTurnAskedForClue: false
+});
+assert.equal(idkProbe.engagementState, 'CLUE_GATHERING_PROBE', 'First "I don\'t know" triggers clue-gathering probe instead of guessing');
+assert.equal(idkProbe.directive.includes(mcAnchor), true, 'Clue-gathering directive preserves active Minecraft fraction topic anchor');
+assert.equal(idkProbe.nextAskedForClue, true);
+
+const clueProvided = analyzeStudentResponseAndEngagement('I am confused about what the bottom number of the fraction means', {
+  activeTopicAnchor: mcAnchor,
+  uncertaintyStreak: idkProbe.nextUncertaintyStreak,
+  lastTurnAskedForClue: idkProbe.nextAskedForClue
+});
+assert.equal(clueProvided.engagementState, 'CLUE_IDENTIFIED_FILL_GAP', 'Student reply after clue probe triggers Fill-the-Gap directive');
+assert.equal(clueProvided.directive.includes(mcAnchor), true, 'Fill-the-Gap directive stays anchored to Minecraft fractions');
+
+const offlineMcIdk = generateOfflineSocraticResponse("I don't know", 1, 'CHARLIE', {
+  activeTopicAnchor: mcAnchor,
+  lastHudLatex: '\\text{Stack Fraction} = \\frac{\\text{Items}}{64}'
+});
+assert.equal(/Minecraft stash boxes/i.test(offlineMcIdk.text), true, 'Offline "I don\'t know" stays anchored to Minecraft stash boxes and asks which part is confusing');
+
+console.log('ALL MIC TURN-TAKING, INSTANT MIC RESUME, MULTI-TURN PERFORMANCE, AND SECTION 16 TOPIC-ANCHOR CLUE-GATHERING TESTS PASSED.');

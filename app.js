@@ -28,6 +28,7 @@ import {
   generateFallbackLearningGapAnalysis,
   generateStage2ConceptOffer,
   generateNextQuestionPrompt,
+  analyzeStudentResponseAndEngagement,
   detectSystemCommand,
   generateOfflineSocraticResponse
 } from './svs-engine.js';
@@ -47,6 +48,12 @@ class SocraticGeminiChatApp {
     this.lastStudentUtterance = '';
     this.lastHudLatex = '';
     this.lastGraphSpec = null;
+
+    // Section 16: Active Topic Anchor, Clue-Gathering & Engagement State
+    this.activeTopicAnchor = '';
+    this.uncertaintyStreak = 0;
+    this.lastTurnAskedForClue = false;
+    this.gapAbortController = null;
 
     // End-of-Session Manim Consent State & Stage 2 Concept Explanation State
     this.awaitingManimConsent = false;
@@ -225,10 +232,19 @@ class SocraticGeminiChatApp {
         this.activeManimController.stop();
         this.activeManimController = null;
       }
+      if (this.gapAbortController) {
+        try {
+          this.gapAbortController.abort();
+        } catch (_) {}
+        this.gapAbortController = null;
+      }
       this.conversationHistory = [];
       this.stopScratchpadDeliberationClock();
       this.hasActiveProblemTurn = false;
       this.delibStage = 0;
+      this.activeTopicAnchor = '';
+      this.uncertaintyStreak = 0;
+      this.lastTurnAskedForClue = false;
       this.awaitingManimConsent = false;
       this.awaitingConceptConsent = false;
       this.latestLearningGap = null;
@@ -403,6 +419,9 @@ class SocraticGeminiChatApp {
     this.awaitingConceptConsent = false;
     this.isTimerPaused = false;
     this.pausedElapsedSec = 0;
+    this.activeTopicAnchor = '';
+    this.uncertaintyStreak = 0;
+    this.lastTurnAskedForClue = false;
 
     const timerEl = document.getElementById('stripScratchpadTimer');
     const fillEl = document.getElementById('stripScratchpadFill');
@@ -780,6 +799,14 @@ class SocraticGeminiChatApp {
     this.appendChatMessage('svs', checkInPacket.spokenText, footerTag, '');
     this.lastSpokenBurst = checkInPacket.spokenText;
     this.avionics.speakCalibratedBurst(checkInPacket.spokenText, this.activeProfileKey);
+
+    // Prepare Stage 2 concept explanation in the background only when Stage 1 timer has actually fired
+    this.analyzeLearningGapBehindTheScenes(
+      this.lastSpokenBurst,
+      this.lastHudLatex,
+      this.lastStudentUtterance,
+      true
+    );
   }
 
   /**
@@ -891,11 +918,10 @@ class SocraticGeminiChatApp {
   }
 
   /**
-   * Runs asynchronously behind the scenes AS SOON AS the tutor starts reading the previous script aloud.
-   * Diagnoses the hidden learning gap / prerequisite concept that could cause a student to stall at this step,
-   * and pre-warms the TTS audio for both the Stage 2 offer and the concept explanation.
+   * Computes an instant 0ms local fallback concept-bridge on normal turns (preventing multi-turn network/CPU lag)
+   * and only queries `/api/analyze-gap` when the student reaches Stage 1 deliberation (15s silence) for Stage 2 offer.
    */
-  async analyzeLearningGapBehindTheScenes(tutorSpokenText, hudLatex, studentUtterance) {
+  async analyzeLearningGapBehindTheScenes(tutorSpokenText, hudLatex, studentUtterance, fetchFromServer = false) {
     const fallbackGap = generateFallbackLearningGapAnalysis({
       lastHudLatex: hudLatex || this.lastHudLatex,
       lastTutorQuestion: tutorSpokenText || this.lastSpokenBurst,
@@ -903,11 +929,21 @@ class SocraticGeminiChatApp {
     });
     this.latestLearningGap = fallbackGap;
 
+    if (!fetchFromServer) return;
+
+    if (this.gapAbortController) {
+      try {
+        this.gapAbortController.abort();
+      } catch (_) {}
+    }
+    this.gapAbortController = new AbortController();
+
     try {
       const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
       const res = await fetch('/api/analyze-gap', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: this.gapAbortController.signal,
         body: JSON.stringify({
           history: this.conversationHistory.slice(-6),
           lastTutorQuestion: tutorSpokenText || this.lastSpokenBurst,
@@ -1029,6 +1065,12 @@ class SocraticGeminiChatApp {
     }
 
     this.delibStage = 0;
+    if (this.gapAbortController) {
+      try {
+        this.gapAbortController.abort();
+      } catch (_) {}
+      this.gapAbortController = null;
+    }
     this.avionics.stopSpeaking('NEW_STUDENT_TURN');
 
     this.appendChatMessage('student', utterance);
@@ -1073,6 +1115,11 @@ class SocraticGeminiChatApp {
 
     this.lastStudentUtterance = utterance;
 
+    // Anchor the main topic on the first question of a session (never overwrite on "I don't know" or short replies)
+    if (!this.activeTopicAnchor && utterance.trim().length > 3) {
+      this.activeTopicAnchor = utterance.trim();
+    }
+
     const retroactiveTelemetry = computeRetroactiveAttribution(
       utterance,
       pauseSeconds,
@@ -1095,16 +1142,19 @@ class SocraticGeminiChatApp {
 
       if (chatResult && chatResult.reply) {
         const llmReply = chatResult.reply;
-        // Parse and sanitize BEFORE storing in history so raw `$` signs never pollute future turns!
+        // Parse and store a compact history entry (omitting bulky <graph> and <telemetry> JSON so long conversations stay fast)
         const parsedPacket = parseTriChannelPacket(llmReply, this.maxWords, retroactiveTelemetry);
         const cleanAssistantHistoryText =
           (parsedPacket.hudLatex ? `<hud>${parsedPacket.hudLatex}</hud>\n` : '') +
-          (parsedPacket.graphSpec ? `<graph>${JSON.stringify(parsedPacket.graphSpec)}</graph>\n` : '') +
-          `<telemetry>${JSON.stringify(parsedPacket.telemetry)}</telemetry>\n` +
           parsedPacket.spokenText;
 
         this.conversationHistory.push({ role: 'user', text: utterance });
         this.conversationHistory.push({ role: 'svs', text: cleanAssistantHistoryText });
+        // Bound in-memory history array so elongated conversations never accumulate unbounded payload bloat
+        if (this.conversationHistory.length > 20) {
+          this.conversationHistory = this.conversationHistory.slice(-12);
+        }
+
         this.hasActiveProblemTurn = true;
         this.emitTriChannelResponse(llmReply, {
           speak: true,
@@ -1123,7 +1173,12 @@ class SocraticGeminiChatApp {
     }
 
     this.hasActiveProblemTurn = true;
-    const simResult = generateOfflineSocraticResponse(utterance, this.activeModeId, this.activeProfileKey);
+    const simResult = generateOfflineSocraticResponse(utterance, this.activeModeId, this.activeProfileKey, {
+      activeTopicAnchor: this.activeTopicAnchor,
+      lastHudLatex: this.lastHudLatex,
+      uncertaintyStreak: this.uncertaintyStreak,
+      lastTurnAskedForClue: this.lastTurnAskedForClue
+    });
     this.emitTriChannelResponse(simResult.text, {
       speak: true,
       fallbackTelemetry: retroactiveTelemetry,
@@ -1137,34 +1192,45 @@ class SocraticGeminiChatApp {
     const modeObj = FLIGHT_MODES[this.activeModeId] || FLIGHT_MODES[1];
 
     const userTurnsSoFar = this.conversationHistory.filter(t => t.role === 'user').length;
+    const engagement = analyzeStudentResponseAndEngagement(utterance, {
+      activeTopicAnchor: this.activeTopicAnchor || utterance,
+      uncertaintyStreak: this.uncertaintyStreak,
+      lastTurnAskedForClue: this.lastTurnAskedForClue
+    });
+
+    this.uncertaintyStreak = engagement.nextUncertaintyStreak;
+    this.lastTurnAskedForClue = engagement.nextAskedForClue;
+
     let diagnosticDirective = '';
     if (userTurnsSoFar === 0 && !isGraphRequestedByUser(utterance)) {
       diagnosticDirective = `[SECTION 15 COLD-START BASELINE CALIBRATION (Probe 1 of max 2 | ${modeObj.code} - ${modeObj.name}): Do NOT jump straight into calculation. Issue 1 low-stakes conceptual Micro-Diagnostic question (${modeObj.diagnosticFocus})]\n`;
-    } else if (userTurnsSoFar === 1) {
-      diagnosticDirective = `[SECTION 15 DIAGNOSTIC CHECK (Turn 2 of max 2 | ${modeObj.code} - ${modeObj.name}): If the student hesitated, guessed wrongly, or stalled on the diagnostic probe, IMMEDIATELY ABORT the diagnostic (Rule 4 Safety Net), give a 1-sentence foundational bridge, and ask Step 1 of the problem. If they answered the probe accurately, proceed directly into Step 1 of the problem (or at most 1 final diagnostic probe if essential).]\n`;
-    } else if (userTurnsSoFar >= 2) {
-      diagnosticDirective = `[SECTION 15 2-SHOT LIMIT REACHED: Diagnostic probing is complete. Guide the student through the active problem step-by-step (${modeObj.progressionRule}).]\n`;
+    } else if (userTurnsSoFar === 1 && !engagement.isUncertainOrHintRequest) {
+      diagnosticDirective = `[SECTION 15 DIAGNOSTIC CHECK (Turn 2 of max 2 | ${modeObj.code} - ${modeObj.name}): If the student hesitated, guessed wrongly, or stalled on the diagnostic probe, IMMEDIATELY ABORT the diagnostic (Rule 4 Safety Net), give a 1-sentence foundational bridge, and ask Step 1 of the problem. If they answered the probe accurately, proceed directly into Step 1 of the problem.]\n`;
+    } else if (userTurnsSoFar >= 2 && !engagement.isUncertainOrHintRequest) {
+      diagnosticDirective = `[SECTION 15 2-SHOT LIMIT REACHED: Guide the student through the active problem step-by-step (${modeObj.progressionRule}) from the fundamental ground up.]\n`;
     }
+
+    const topicAnchorHeader = this.activeTopicAnchor
+      ? `[MAIN TOPIC ANCHOR: "${this.activeTopicAnchor}" — Stay 100% anchored to this exact topic and scenario. NEVER stray into unrelated examples or equations.]\n`
+      : '';
 
     const pauseContext =
       pauseSeconds >= 5
         ? `[Student Deliberation Pause: ${pauseSeconds.toFixed(1)}s | Previous Step Tier: ${tierObj.tier} (t_expected=${tierObj.expectedSec}s)]\n`
         : '';
 
-    const gapContext =
-      this.latestLearningGap && this.latestLearningGap.missingConcept
-        ? `[BEHIND-THE-SCENES LEARNING GAP ANALYSIS: Missing Concept = "${this.latestLearningGap.missingConcept}" | Root Cause = "${this.latestLearningGap.whyStuck}" | Bridging Strategy = "${this.latestLearningGap.bridgingStrategy}". Relate directly to the student's response below and incorporate this learning-gap insight into your explanation!]\n`
-        : '';
-
-    const annotatedMessage = `${diagnosticDirective}${pauseContext}${gapContext}${utterance}`;
+    const annotatedMessage = `${topicAnchorHeader}${diagnosticDirective}${engagement.directive}\n${pauseContext}${utterance}`;
     const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
+
+    // Send only the 8 most recent compact turns so multi-turn response latency never increases
+    const recentHistory = this.conversationHistory.slice(-8);
 
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         systemInstruction: sysPrompt,
-        history: this.conversationHistory,
+        history: recentHistory,
         message: annotatedMessage,
         voiceName,
         maxWords: this.maxWords,
@@ -1607,6 +1673,11 @@ class SocraticGeminiChatApp {
     const micBtnLabel = document.getElementById('micBtnLabel');
     const statusDot = document.getElementById('statusDot');
     const vadStateTag = document.getElementById('vadStateTag');
+    const instrBanner = document.getElementById('micTurnInstructionBanner');
+    const instrIcon = document.getElementById('micInstrIcon');
+    const instrTitle = document.getElementById('micInstrTitle');
+    const instrText = document.getElementById('micInstrText');
+    const studentInput = document.getElementById('studentInput');
 
     if (!this.avionics.isMicActive) {
       btnToggleMic.className = 'mic-pill-btn';
@@ -1615,6 +1686,27 @@ class SocraticGeminiChatApp {
       vadStateTag.textContent = this.isBotSpeaking
         ? 'Tutor speaking...'
         : 'Mic off — click Speak to talk with the tutor';
+
+      if (instrBanner && instrIcon && instrTitle && instrText) {
+        if (this.isBotSpeaking) {
+          instrBanner.className = 'mic-instruction-banner muted-wait';
+          instrIcon.textContent = '🔊';
+          instrTitle.textContent = 'Tutor Explaining Concept:';
+          instrText.textContent =
+            'Please wait until the tutor finishes speaking before intervening (or click "■ Stop Speaking" to interrupt).';
+        } else {
+          instrBanner.className = 'mic-instruction-banner idle';
+          instrIcon.textContent = '🎤';
+          instrTitle.textContent = 'Voice Turn-Taking Guide:';
+          instrText.textContent =
+            'Click "Speak" to enable your microphone. While the tutor explains concepts, the mic auto-mutes to prevent speaker echo—wait for the green "Speak Now" banner before talking.';
+        }
+      }
+      if (studentInput) {
+        studentInput.placeholder = this.isBotSpeaking
+          ? '🔊 Tutor is explaining — please wait for voice to finish or type your response...'
+          : "Ask any STEM question, ask to 'graph y = ...', or click Speak to use your voice...";
+      }
       return;
     }
 
@@ -1622,14 +1714,38 @@ class SocraticGeminiChatApp {
       btnToggleMic.className = 'mic-pill-btn echo-paused';
       micBtnLabel.textContent = 'Mic Paused';
       statusDot.className = 'status-dot muted-echo';
-      vadStateTag.textContent = 'Tutor speaking — microphone auto-muted so it will not hear the speaker';
+      vadStateTag.textContent = 'Tutor speaking — microphone auto-muted to prevent speaker echo';
+
+      if (instrBanner && instrIcon && instrTitle && instrText) {
+        instrBanner.className = 'mic-instruction-banner muted-wait';
+        instrIcon.textContent = '🔇';
+        instrTitle.textContent = 'Mic Auto-Muted While Tutor Explains — Please Hold Your Voice:';
+        instrText.textContent =
+          'To prevent speaker feedback, your mic is muted while the tutor speaks. Please wait until the voice finishes before speaking (or click "■ Stop Speaking" to interrupt).';
+      }
+      if (studentInput) {
+        studentInput.placeholder =
+          '🔇 Mic auto-muted while tutor speaks — please wait until explanation finishes before speaking...';
+      }
     } else {
       btnToggleMic.className = 'mic-pill-btn active';
       micBtnLabel.textContent = 'Listening';
       statusDot.className = 'status-dot listening';
       vadStateTag.textContent = this.isUserSpeaking
         ? 'Hearing you speak — smart pause detector active...'
-        : 'Listening for your voice (2.4s smart pause detector + mid-sentence grace)...';
+        : 'Mic active & ready — speak now (2.4s smart pause detector)...';
+
+      if (instrBanner && instrIcon && instrTitle && instrText) {
+        instrBanner.className = 'mic-instruction-banner ready-listen';
+        instrIcon.textContent = '🟢';
+        instrTitle.textContent = 'Mic Ready — Speak Now!';
+        instrText.textContent = this.isUserSpeaking
+          ? 'Hearing your voice clearly — keep speaking at your own pace.'
+          : 'Tutor has finished speaking. Your microphone is live and will pick up your very first word immediately.';
+      }
+      if (studentInput) {
+        studentInput.placeholder = '🟢 Mic is active & listening — Speak now, or type your response here...';
+      }
     }
   }
 }

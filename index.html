@@ -123,6 +123,17 @@
 
         <!-- BOTTOM GEMINI PILL INPUT BAR -->
         <div class="input-dock">
+          <!-- PROMINENT TURN-TAKING / SPEAKER ECHO-MUTE USER INSTRUCTION BANNER -->
+          <div class="mic-instruction-banner idle" id="micTurnInstructionBanner" role="status" aria-live="polite">
+            <span class="mic-instr-icon" id="micInstrIcon">🎤</span>
+            <div class="mic-instr-body">
+              <strong id="micInstrTitle">Voice Turn-Taking Guide:</strong>
+              <span id="micInstrText">
+                Click "Speak" to enable your microphone. While the tutor explains concepts, the mic auto-mutes to prevent speaker echo—please wait until the voice finishes before speaking.
+              </span>
+            </div>
+          </div>
+
           <!-- VOICE STATUS + SMART SPEECH PAUSE DETECTOR DEVICE -->
           <div class="voice-status-banner" id="voiceStatusBanner">
             <span class="status-dot" id="statusDot"></span>

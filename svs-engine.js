@@ -282,7 +282,117 @@ Transmission:
 y = 2x^2 - 8x, \\quad \\text{Let } y = 0
 </hud>
 <telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":60,"i_eff":55,"i_reg":80,"cli":64,"hint_level":1,"session_complete":false}</telemetry>
-Close! When the equation equals zero, the height is zero at the x-intercepts. Looking back at the equation, what common factor can we pull out of both terms?`;
+Close! When the equation equals zero, the height is zero at the x-intercepts. Looking back at the equation, what common factor can we pull out of both terms?
+
+---
+
+## 16. TOPIC ANCHOR, CLUE-GATHERING GAP DISCOVERY & GROUND-UP LOGICAL FLOW
+Throughout elongated conversations, you MUST obey these four rules on every single turn:
+
+1. UNBREAKABLE TOPIC ANCHOR (NEVER STRAY FROM THE MAIN QUESTION/TOPIC):
+   - Lock onto the student's main question, topic, and scenario (for example, if the student asks about real-world applications of fractions in Minecraft using stash boxes/chests, stay 100% anchored to fractions in Minecraft stash boxes until that topic is completely understood).
+   - NEVER lose track of the main stream of thought or drift into unrelated examples or topics (for instance, NEVER switch from fractions in Minecraft to solving a linear equation or unrelated algebra).
+
+2. NEVER GUESS THE LEARNING GAP ON "I DON'T KNOW" OR "CAN I HAVE A HINT?":
+   - When the student responds with "I don't know", "not sure", "I'm confused", or "Can I have a hint?", NEVER guess what their learning gap is and NEVER invent random new analogies or switch examples.
+   - Instead, ASK BACK the student to pinpoint what part feels missing or unclear and encourage them to identify the specific point they are struggling to understand so you can gather a clue (e.g., "No worries! Staying with our Minecraft stash box fraction, which part feels tricky right now—what the bottom number of the fraction means, or how many items fill one slot?").
+
+3. FILL THE EXACT FUNDAMENTAL GAP ONCE A CLUE IS GATHERED:
+   - Once the student's reply gives you a clue about what they are struggling with, directly fill that exact fundamental gap from the ground up within the SAME topic/scenario.
+   - Do not skip foundational ground or jump to the next concept before checking that the student understands the current foundational piece.
+
+4. ANALYZE EVERY RESPONSE FOR ENGAGEMENT & BUILD A STEP-BY-STEP FLOW OF LOGIC:
+   - Carefully analyze every response from the student to gauge their engagement and comprehension level.
+   - Use the conversation to help the student build a clear, connected flow of logic for the topic from the fundamental ground up, verifying their understanding at each step before moving forward.`;
+}
+
+/**
+ * Analyzes every student response to gauge engagement, detect uncertainty / hint requests ("I don't know", "Can I have a hint?"),
+ * detect diagnostic clues about learning gaps, and enforce Topic Anchor + Clue-Gathering pedagogy.
+ */
+export function analyzeStudentResponseAndEngagement(utterance = '', context = {}) {
+  const raw = String(utterance || '').trim();
+  const norm = raw.toLowerCase();
+  const activeTopicAnchor = String(context.activeTopicAnchor || '').trim();
+  const uncertaintyStreak = Number(context.uncertaintyStreak) || 0;
+  const lastTurnAskedForClue = Boolean(context.lastTurnAskedForClue);
+
+  const isUncertain =
+    /^(i\s+don'?t\s+know|idk|no\s+idea|not\s+sure|i\s+am\s+not\s+sure|i'?m\s+not\s+sure|i'?m\s+lost|i\s+am\s+lost|i\s+have\s+no\s+clue|no\s+clue|stuck|i'?m\s+stuck|confused|i'?m\s+confused|i\s+don'?t\s+get\s+it|i\s+don'?t\s+understand|unsure|help|huh|\?+)[.!?\s]*$/i.test(
+      norm
+    ) ||
+    /\b(i\s+don'?t\s+know|idk|have\s+no\s+idea|don'?t\s+understand\s+this|completely\s+lost)\b/i.test(
+      norm
+    );
+
+  const isHintRequest =
+    /\b(can\s+i\s+have\s+a\s+hint|give\s+me\s+a\s+hint|need\s+a\s+hint|hint\s+please|any\s+hint|what\s+is\s+the\s+hint)\b/i.test(
+      norm
+    ) || /^hint[.!?\s]*$/i.test(norm);
+
+  const isUncertainOrHintRequest = isUncertain || isHintRequest;
+
+  // Detect if the student is providing a specific clue about what confuses them
+  const namesSpecificStrugglePoint =
+    !isUncertainOrHintRequest &&
+    (lastTurnAskedForClue ||
+      /\b(confused\s+about|don'?t\s+get\s+the|don'?t\s+understand\s+why|don'?t\s+understand\s+how|what\s+does\s+the|what\s+is\s+a|why\s+do\s+we|how\s+do\s+we|the\s+first\s+part|the\s+second\s+part|the\s+bottom|the\s+top|denominator|numerator|fraction|box|stack|slot|factor|coefficient|slope|formula|step)\b/i.test(
+        norm
+      ));
+
+  const topicLabel = activeTopicAnchor || 'the current problem';
+
+  if (isUncertainOrHintRequest) {
+    if (!lastTurnAskedForClue) {
+      return {
+        isUncertain,
+        isHintRequest,
+        isUncertainOrHintRequest: true,
+        hasSpecificClue: false,
+        nextUncertaintyStreak: uncertaintyStreak + 1,
+        nextAskedForClue: true,
+        engagementState: 'CLUE_GATHERING_PROBE',
+        directive: `[SECTION 16 CLUE-GATHERING DIRECTIVE (Student said: "${raw}" | Active Topic Anchor: "${topicLabel}"): Do NOT guess the student's learning gap, do NOT try a random new analogy, and NEVER switch away from "${topicLabel}"! Instead, warmly ask the student back what specific point feels missing or confusing right now and encourage them to identify the part they are struggling with (offer 2 simple, concrete pieces of the current step in "${topicLabel}" so they can easily point out where they are stuck).]`
+      };
+    }
+
+    // Student said "I don't know" even after we asked them to identify the missing point ->
+    // Stay strictly on the same topic, drop to the most fundamental ground-level building block, explain that one piece simply, and ask a tiny check question.
+    return {
+      isUncertain,
+      isHintRequest,
+      isUncertainOrHintRequest: true,
+      hasSpecificClue: false,
+      nextUncertaintyStreak: uncertaintyStreak + 1,
+      nextAskedForClue: false,
+      engagementState: 'GROUND_UP_FOUNDATIONAL_BRIDGE',
+      directive: `[SECTION 16 GROUND-UP FOUNDATION DIRECTIVE (Student still uncertain after clue probe | Streak=${uncertaintyStreak + 1} | Active Topic Anchor: "${topicLabel}"): NEVER switch topics or invent an unrelated example (such as linear equations)! Stay 100% inside "${topicLabel}". Explain the single most fundamental starting concept of "${topicLabel}" in 1 simple, concrete sentence, and ask a tiny, easy check question to verify their understanding of that foundation before moving forward.]`
+    };
+  }
+
+  if (namesSpecificStrugglePoint) {
+    return {
+      isUncertain: false,
+      isHintRequest: false,
+      isUncertainOrHintRequest: false,
+      hasSpecificClue: true,
+      nextUncertaintyStreak: 0,
+      nextAskedForClue: false,
+      engagementState: 'CLUE_IDENTIFIED_FILL_GAP',
+      directive: `[SECTION 16 FILL-THE-GAP DIRECTIVE (Clue gathered from student: "${raw}" | Active Topic Anchor: "${topicLabel}"): The student has identified the point they are struggling with! Directly fill this exact learning gap from the fundamental ground up in 1 clear sentence within "${topicLabel}", and ask a simple verification question to confirm they understand this point before advancing to the next concept.]`
+    };
+  }
+
+  return {
+    isUncertain: false,
+    isHintRequest: false,
+    isUncertainOrHintRequest: false,
+    hasSpecificClue: false,
+    nextUncertaintyStreak: 0,
+    nextAskedForClue: false,
+    engagementState: 'ENGAGED_LOGICAL_FLOW',
+    directive: `[SECTION 16 LOGICAL FLOW & ENGAGEMENT DIRECTIVE (Active Topic Anchor: "${topicLabel}"): Carefully analyze the student's response ("${raw}") to gauge their understanding and engagement. Stay 100% anchored to "${topicLabel}". Confirm whether they truly grasp the current foundational concept before guiding them to the next logical step in the chain of thought.]`
+  };
 }
 
 /**
@@ -917,8 +1027,10 @@ export function detectSystemCommand(utterance) {
   return null;
 }
 
-export function detectFaultCondition(utterance) {
+export function detectFaultCondition(utterance, context = {}) {
   const norm = utterance.toLowerCase().trim();
+  const activeTopic = String(context.activeTopicAnchor || '').toLowerCase();
+  const hud = sanitizeLatexForHud(context.lastHudLatex || '') || '\\text{Part} / \\text{Whole}';
 
   const extortionPatterns = [
     /\bstop\s+asking\s+questions\s+and\s+just\s+do\s+my\s+homework\b/i,
@@ -929,20 +1041,27 @@ export function detectFaultCondition(utterance) {
       return {
         code: 402,
         ...FAULT_CODES[402],
-        interceptResponse: `<hud>ax^2 + bx + c = 0</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":55,"i_eff":50,"i_reg":60,"cli":75,"hint_level":1,"session_complete":false}</telemetry>I cannot hand over a finished assignment, but we can solve it together step by step. Which variable or term should we isolate first?`
+        interceptResponse: `<hud>${hud}</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":55,"i_eff":50,"i_reg":60,"cli":75,"hint_level":1,"session_complete":false}</telemetry>I cannot hand over a finished assignment, but we can solve it together step by step. Which part of this problem should we look at first?`
       };
     }
   }
 
   const stallPatterns = [
-    /^(i\s+don'?t\s+know|idk|no\s+idea|i'?m\s+lost|i\s+have\s+no\s+clue)[.!?\s]*$/i
+    /^(i\s+don'?t\s+know|idk|no\s+idea|not\s+sure|i'?m\s+lost|i\s+have\s+no\s+clue|can\s+i\s+have\s+a\s+hint|give\s+me\s+a\s+hint|hint)[.!?\s]*$/i
   ];
   for (const pat of stallPatterns) {
     if (pat.test(norm)) {
+      if (/minecraft|fraction|stash|chest|box/i.test(activeTopic)) {
+        return {
+          code: 401,
+          ...FAULT_CODES[401],
+          interceptResponse: `<hud>\\text{Fraction} = \\frac{\\text{Items Have}}{\\text{Full Stack (64)}}</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":55,"i_eff":55,"i_reg":70,"cli":72,"hint_level":1,"session_complete":false}</telemetry>No worries at all! Staying with our Minecraft stash boxes, which part feels confusing right now: what the bottom number of the fraction means, or how many items make one full stack?`
+        };
+      }
       return {
         code: 401,
         ...FAULT_CODES[401],
-        interceptResponse: `<hud>\\frac{d}{dx}(x^n) = n \\cdot x^{n-1}</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":50,"i_eff":52,"i_reg":65,"cli":80,"hint_level":1,"session_complete":false}</telemetry>No worries at all, let us simplify. Looking at the power rule on your screen, do we multiply by the exponent n, or divide by it?`
+        interceptResponse: `<hud>${hud}</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":52,"i_eff":55,"i_reg":68,"cli":75,"hint_level":1,"session_complete":false}</telemetry>No worries at all! So we stay right on track, which part of this step feels unclear to you right now—the meaning of the terms, or what operation comes first?`
       };
     }
   }
@@ -967,18 +1086,26 @@ export function detectFaultCondition(utterance) {
   return null;
 }
 
-export function generateOfflineSocraticResponse(utterance, modeId = 1, _profileKey = 'CHARLIE') {
+export function generateOfflineSocraticResponse(utterance, modeId = 1, _profileKey = 'CHARLIE', context = {}) {
   const cmd = detectSystemCommand(utterance);
   if (cmd) {
     return { text: cmd.response, command: cmd, fault: null };
   }
 
-  const fault = detectFaultCondition(utterance);
+  const fault = detectFaultCondition(utterance, context);
   if (fault) {
     return { text: fault.interceptResponse, command: null, fault };
   }
 
   const norm = utterance.toLowerCase();
+
+  if (/minecraft/i.test(norm) && /fraction/i.test(norm)) {
+    return {
+      text: `<hud>\\text{Stack Fraction} = \\frac{\\text{Items}}{64}</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":86,"i_eff":85,"i_reg":90,"cli":40,"hint_level":0,"session_complete":false}</telemetry>Minecraft stash boxes are a great way to see fractions in action! Before we count chests, if one full slot holds 64 blocks, what fraction of a stack is 32 blocks?`,
+      command: null,
+      fault: null
+    };
+  }
 
   if (isGraphRequestedByUser(norm)) {
     const spec = buildFallbackGraphSpec('', utterance);

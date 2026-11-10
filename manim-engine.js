@@ -382,6 +382,26 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     }
   }
 
+  const compiledGraphCache = new Map();
+  let rafId = null;
+
+  function getCompiledSceneGraph(graphExprStr, xMin, xMax) {
+    const key = `${graphExprStr}|${xMin}|${xMax}`;
+    if (compiledGraphCache.has(key)) {
+      return compiledGraphCache.get(key);
+    }
+    const fn = compileMathExpression(graphExprStr);
+    const autoPts = findCurveFeatures(fn, xMin, xMax);
+    const entry = { fn, autoPts };
+    compiledGraphCache.set(key, entry);
+    return entry;
+  }
+
+  function ensureAnimationLoopRunning() {
+    if (rafId !== null || isDestroyed) return;
+    rafId = requestAnimationFrame(renderSlideFrame);
+  }
+
   async function playScene(idx) {
     if (isDestroyed) return;
     stopCurrentAudio();
@@ -394,6 +414,7 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     renderStepSlideContent(currentSceneIdx);
     sceneStartTimestamp = performance.now();
     sceneDurationMs = 8000;
+    ensureAnimationLoopRunning();
 
     onPlaybackStateChange(true);
     statusLabel.textContent = `Step ${currentSceneIdx + 1} of ${scenes.length} • Loading voice...`;
@@ -484,8 +505,9 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     playScene(0);
   });
 
-  // HiDPI Frame Renderer (Clean, Stationary Key Points, Zero Spoken Script Clutter)
+  // HiDPI Frame Renderer (Clean, Stationary Key Points, Zero Spoken Script Clutter, Cached Curve Evaluation)
   function renderSlideFrame() {
+    rafId = null;
     if (isDestroyed) return;
 
     const ctx = canvas.getContext('2d');
@@ -500,7 +522,6 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     const progress = Math.min(1, Math.max(0, elapsed / sceneDurationMs));
     const introAlpha = Math.min(1, elapsed / 300);
 
-    // 1. Clean Dark Presentation Backdrop
     // 1. Clean Dark Presentation Backdrop + Inset Frame Border
     const bgGrad = ctx.createLinearGradient(0, 0, W, H);
     bgGrad.addColorStop(0, '#090e1a');
@@ -615,13 +636,13 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
         ctx.stroke();
       }
 
-      // Function Curve
-      const fn = compileMathExpression(graphExprStr);
+      // Cached Function Curve & Stationary Key Points
+      const { fn, autoPts } = getCompiledSceneGraph(graphExprStr, xMin, xMax);
       ctx.strokeStyle = '#38bdf8';
       ctx.lineWidth = 2.3;
       ctx.beginPath();
       let pen = false;
-      for (let px = 0; px <= gw; px += 1) {
+      for (let px = 0; px <= gw; px += 2) {
         const wx = xMin + (px / gw) * (xMax - xMin);
         const wy = fn(wx);
         if (Number.isFinite(wy)) {
@@ -642,8 +663,6 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
       }
       ctx.stroke();
 
-      // Stationary Key Points (Roots, Vertex, y-intercept, plus Step's highlightPoint)
-      const autoPts = findCurveFeatures(fn, xMin, xMax);
       autoPts.forEach((pt) => {
         const sx = toScreenX(pt.x);
         const sy = toScreenY(pt.y);
@@ -694,16 +713,24 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     ctx.fillRect(0, H - 4, W * totalProgress, 4);
 
     ctx.restore();
-    requestAnimationFrame(renderSlideFrame);
+
+    // Stop the 60fps loop when paused or completed so finished video cards consume 0% CPU
+    if (isPlaying && !isDestroyed) {
+      rafId = requestAnimationFrame(renderSlideFrame);
+    }
   }
 
-  requestAnimationFrame(renderSlideFrame);
+  ensureAnimationLoopRunning();
   playScene(0);
 
   const controller = {
     stop: () => {
       isDestroyed = true;
       isPlaying = false;
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
       stopCurrentAudio();
       onPlaybackStateChange(false);
     },
