@@ -529,8 +529,14 @@ class SocraticGeminiChatApp {
       return;
     }
 
-    // Stop any current speech before generating and playing the video
+    // Stop any current speech or previous solution video before generating and playing the video
     this.avionics.stopSpeaking('START_SOLUTION_VIDEO');
+    if (this.activeManimController) {
+      try {
+        this.activeManimController.stop();
+      } catch (_) {}
+      this.activeManimController = null;
+    }
 
     // User chose YES -> Generate Step-by-Step Solution Storyboard and render Video Player in chat
     const loadingRow = this.appendThinkingBubble(
@@ -825,6 +831,9 @@ class SocraticGeminiChatApp {
    * Once the voice finishes speaking this message, `onBotSpeakingChange(false)` automatically runs the timer a second time (15s).
    */
   triggerScratchpadSoftPing(reason = 'AUTO_STAGE_1') {
+    if (reason !== 'MANUAL_TEST' && this.isBotSpeaking) {
+      return;
+    }
     if (reason === 'MANUAL_TEST') {
       this.hasActiveProblemTurn = true;
       this.delibStage = 1;
@@ -863,6 +872,9 @@ class SocraticGeminiChatApp {
    * Suggests if the user wants the chatbot to explain the underlying concept, using the behind-the-scenes learning-gap diagnosis.
    */
   triggerStage2ConceptOffer() {
+    if (this.isBotSpeaking) {
+      return;
+    }
     this.awaitingConceptConsent = true;
     const offerPacket = generateStage2ConceptOffer({
       activeTier: this.currentTelemetry.step_tier,

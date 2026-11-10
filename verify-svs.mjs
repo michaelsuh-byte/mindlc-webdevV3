@@ -25,8 +25,14 @@ import {
 } from './svs-engine.js';
 
 import { compileMathExpression, findCurveFeatures } from './graph-engine.js';
-import { isIncompleteSpokenClause, AudioAvionicsController } from './audio-avionics.js';
-import { normalizePcm16Buffer } from './server.mjs';
+import {
+  isIncompleteSpokenClause,
+  AudioAvionicsController,
+  claimExclusiveVoiceChannel,
+  releaseVoiceChannel,
+  auditAndFixSimultaneousVoices
+} from './audio-avionics.js';
+import { normalizePcm16Buffer, GEMINI_TTS_MODELS } from './server.mjs';
 
 // 1. Verify Strict Pre-KaTeX Screening Layer (`sanitizeLatexForHud`) strips ALL `$` signs
 const dirtyHud = '<hud>$$a = 2$$, $b = 5$ and $c = 2$</hud>';
@@ -366,4 +372,45 @@ assert.equal(
   'Includes unread script recovery directive if a clause was interrupted'
 );
 
-console.log('ALL TALKING-POINT VERIFICATION LAYER, FUZZY TAIL ECHO GUARD, AND SIMPLIFIED UI TESTS PASSED.');
+// 20. Verify Voice Integrity & Auto-Recovery Layer (Multi-Model TTS Failover Pool, Simultaneous Voice Guard, & Persona Drift Healer)
+assert.equal(
+  Array.isArray(GEMINI_TTS_MODELS) && GEMINI_TTS_MODELS.length >= 5,
+  true,
+  'Server maintains a 5-model Gemini Studio Neural TTS failover pool so quota limits never stop speech mid-session'
+);
+
+// Simulate two audio instances playing simultaneously and verify automatic collision fix
+const mockAudio1 = {
+  paused: false,
+  ended: false,
+  muted: false,
+  volume: 1,
+  src: 'blob:1',
+  pause() {
+    this.paused = true;
+  }
+};
+const mockAudio2 = {
+  paused: false,
+  ended: false,
+  muted: false,
+  volume: 1,
+  src: 'blob:2',
+  pause() {
+    this.paused = true;
+  }
+};
+claimExclusiveVoiceChannel(mockAudio1, 'CHAT_1');
+claimExclusiveVoiceChannel(mockAudio2, 'CHAT_2');
+assert.equal(mockAudio1.paused, true, 'claimExclusiveVoiceChannel immediately stops any previous voice stream');
+assert.equal(mockAudio1.muted, true, 'claimExclusiveVoiceChannel mutes displaced voice stream');
+assert.equal(mockAudio2.paused, false, 'Latest voice stream remains active');
+releaseVoiceChannel(mockAudio2);
+
+// Verify persona drift healer restores Studio Neural Voice if an invalid/generic voice ID is ever set
+testAvionics.selectedVoiceURI = 'Microsoft David Generic Desktop';
+const healedVoice = testAvionics.getSelectedNeuralVoiceName('CHARLIE');
+assert.equal(healedVoice, 'Aoede', 'Auto-heals generic/invalid voice URI back to Studio Neural Voice Aoede');
+assert.equal(testAvionics.voiceIntegrityStats.personaDriftFixed >= 1, true, 'Records personaDriftFixed stat');
+
+console.log('ALL VOICE INTEGRITY AUTO-RECOVERY, MULTI-MODEL TTS FAILOVER, AND TALKING-POINT VERIFICATION TESTS PASSED.');

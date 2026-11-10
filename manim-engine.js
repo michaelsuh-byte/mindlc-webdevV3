@@ -10,6 +10,11 @@
 
 import { compileMathExpression, findCurveFeatures } from './graph-engine.js';
 import { sanitizeLatexForHud, sanitizeForSpeech } from './svs-engine.js';
+import {
+  claimExclusiveVoiceChannel,
+  releaseVoiceChannel,
+  auditAndFixSimultaneousVoices
+} from './audio-avionics.js';
 
 export function createManimVideoElement(storyboard = {}, options = {}) {
   const voiceName = options.voiceName || 'Aoede';
@@ -305,8 +310,10 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
     });
   }
 
-  async function fetchSceneAudioBlob(sceneIdx) {
-    if (audioCache.has(sceneIdx)) {
+  let scenePlayToken = 0;
+
+  async function fetchSceneAudioBlob(sceneIdx, forceRefresh = false) {
+    if (!forceRefresh && audioCache.has(sceneIdx)) {
       return audioCache.get(sceneIdx);
     }
     const rawNarration = String(scenes[sceneIdx]?.narration || '').replace(/\$/g, '').trim();
@@ -322,31 +329,42 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
           body: JSON.stringify({
             text: narration,
             voiceName: voiceName || 'Aoede',
+            forceRefresh: forceRefresh || attempt > 1,
             apiKey: apiKey || undefined
           })
         });
         if (res.ok) {
           const blob = await res.blob();
-          const url = URL.createObjectURL(blob);
-          audioCache.set(sceneIdx, url);
-          return url;
+          if (blob && blob.size > 200) {
+            const url = URL.createObjectURL(blob);
+            audioCache.set(sceneIdx, url);
+            return url;
+          }
         }
       } catch (_) {}
       if (attempt < 3) {
-        await new Promise(r => setTimeout(r, 300 * attempt));
+        await new Promise(r => setTimeout(r, 250 * attempt));
       }
     }
     return null;
   }
 
   function stopCurrentAudio() {
+    scenePlayToken++;
     clearTimeout(fallbackTimer);
     if (currentAudio) {
-      try {
-        currentAudio.pause();
-        currentAudio.onended = null;
-      } catch (_) {}
+      const el = currentAudio;
       currentAudio = null;
+      releaseVoiceChannel(el);
+      try {
+        el.onended = null;
+        el.onerror = null;
+        el.onplay = null;
+        el.muted = true;
+        el.volume = 0;
+        el.pause();
+        el.src = '';
+      } catch (_) {}
     }
   }
 
@@ -405,6 +423,7 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
   async function playScene(idx) {
     if (isDestroyed) return;
     stopCurrentAudio();
+    const mySceneToken = ++scenePlayToken;
 
     currentSceneIdx = Math.max(0, Math.min(scenes.length - 1, idx));
     isPlaying = true;
@@ -423,8 +442,11 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
       fetchSceneAudioBlob(currentSceneIdx + 1);
     }
 
-    const audioUrl = await fetchSceneAudioBlob(currentSceneIdx);
-    if (isDestroyed || !isPlaying) return;
+    let audioUrl = await fetchSceneAudioBlob(currentSceneIdx);
+    if (!audioUrl && !isDestroyed && isPlaying && mySceneToken === scenePlayToken) {
+      audioUrl = await fetchSceneAudioBlob(currentSceneIdx, true);
+    }
+    if (isDestroyed || !isPlaying || mySceneToken !== scenePlayToken) return;
 
     if (audioUrl) {
       const activeRate = Math.max(0.75, Math.min(1.5, Number(getPlaybackRate()) || 1.1));
@@ -433,6 +455,9 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
       audio.defaultPlaybackRate = activeRate;
       audio.playbackRate = activeRate;
       audio.preservesPitch = true;
+
+      // Claim exclusive voice channel so zero other chat or video voices can play simultaneously
+      claimExclusiveVoiceChannel(audio, `SOLUTION_VIDEO_STEP_${currentSceneIdx + 1}`);
       routeAudioThroughNormalizer(audio);
       currentAudio = audio;
 
@@ -443,6 +468,12 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
       };
 
       audio.onplay = () => {
+        if (mySceneToken !== scenePlayToken) {
+          releaseVoiceChannel(audio);
+          audio.pause();
+          return;
+        }
+        auditAndFixSimultaneousVoices();
         const latestRate = Math.max(0.75, Math.min(1.5, Number(getPlaybackRate()) || 1.1));
         audio.playbackRate = latestRate;
         sceneStartTimestamp = performance.now();
@@ -450,16 +481,21 @@ export function createManimVideoElement(storyboard = {}, options = {}) {
       };
 
       audio.onended = () => {
+        releaseVoiceChannel(audio);
+        if (mySceneToken !== scenePlayToken) return;
         advanceToNextScene();
       };
 
       audio.onerror = () => {
+        releaseVoiceChannel(audio);
+        if (mySceneToken !== scenePlayToken) return;
         fallbackTimer = setTimeout(() => advanceToNextScene(), 6000);
       };
 
       try {
         await audio.play();
       } catch (_) {
+        releaseVoiceChannel(audio);
         statusLabel.textContent = `Step ${currentSceneIdx + 1} of ${scenes.length}`;
         fallbackTimer = setTimeout(() => advanceToNextScene(), 6000);
       }

@@ -150,11 +150,33 @@ function pcm16ToWavBuffer(pcmBuffer, sampleRate = 24000, numChannels = 1) {
 }
 
 /**
- * Synthesizes or retrieves cached/in-flight WAV audio buffer for `(text, voiceName)`
- * Uses `gemini-2.5-flash-preview-tts` directly with serialized queue + automatic retry backoff
- * so concurrent requests never trigger HTTP 429 or drop Aoede's neural voice.
+ * Multi-Model Studio Neural TTS Failover Pool:
+ * All 5 Gemini TTS models support the exact same Studio Neural Voices (e.g. Aoede, Puck, Charon, Kore, Fenrir)
+ * and output identical 24kHz PCM audio, while having independent per-model RPM and RPD quotas.
+ * Whenever a model hits an RPM or daily quota limit, `ttsModelCooldownUntil` immediately routes
+ * synthesis to the next available model in 0ms so the tutor's voice never stops mid-session!
  */
-async function getOrSynthesizeTtsWav(text, voiceName = 'Aoede', apiKey = DEFAULT_API_KEY) {
+export const GEMINI_TTS_MODELS = [
+  'gemini-3.8-flash-lite-tts',
+  'gemini-3.1-flash-tts-preview',
+  'gemini-3.8-flash-tts',
+  'gemini-2.5-flash-preview-tts',
+  'gemini-2.5-pro-preview-tts'
+];
+const ttsModelCooldownUntil = new Map();
+
+function getOrderedHealthyTtsModels() {
+  const now = Date.now();
+  const available = GEMINI_TTS_MODELS.filter(m => (ttsModelCooldownUntil.get(m) || 0) <= now);
+  return available.length > 0 ? available : [...GEMINI_TTS_MODELS];
+}
+
+/**
+ * Synthesizes or retrieves cached/in-flight WAV audio buffer for `(text, voiceName)`
+ * Uses the Multi-Model Gemini Studio Neural TTS Failover Pool with serialized queue + instant model failover
+ * so quota limits or transient errors on one model never stop Aoede's neural voice mid-session.
+ */
+async function getOrSynthesizeTtsWav(text, voiceName = 'Aoede', apiKey = DEFAULT_API_KEY, forceRefresh = false) {
   const cleanText = normalizeTtsText(text);
   if (!cleanText || !apiKey) {
     throw new Error('Missing text or API key for TTS');
@@ -162,26 +184,32 @@ async function getOrSynthesizeTtsWav(text, voiceName = 'Aoede', apiKey = DEFAULT
 
   const resolvedVoice = voiceName || 'Aoede';
   const key = getCacheKey(resolvedVoice, cleanText);
-  if (ttsWavCache.has(key)) {
+  if (forceRefresh) {
+    ttsWavCache.delete(key);
+  } else if (ttsWavCache.has(key)) {
     return ttsWavCache.get(key);
   }
-  if (inFlightTtsMap.has(key)) {
+  if (!forceRefresh && inFlightTtsMap.has(key)) {
     return inFlightTtsMap.get(key);
   }
 
   const synthPromise = (async () => {
     await acquireTtsSlot();
     try {
-      const modelName = 'gemini-2.5-flash-preview-tts';
+      const candidateModels = getOrderedHealthyTtsModels();
       let audioPart = null;
       let lastErr = null;
 
-      for (let attempt = 1; attempt <= 3; attempt++) {
+      for (const modelName of candidateModels) {
+        if ((ttsModelCooldownUntil.get(modelName) || 0) > Date.now() && candidateModels.length > 1) {
+          continue;
+        }
         try {
           const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
           const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            signal: AbortSignal.timeout(12000),
             body: JSON.stringify({
               contents: [{ parts: [{ text: cleanText }] }],
               generationConfig: {
@@ -201,21 +229,24 @@ async function getOrSynthesizeTtsWav(text, voiceName = 'Aoede', apiKey = DEFAULT
           const candidatePart = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data);
           if (response.ok && candidatePart) {
             audioPart = candidatePart.inlineData;
+            ttsModelCooldownUntil.delete(modelName);
             break;
           } else {
-            lastErr = new Error(data.error?.message || `TTS HTTP ${response.status}`);
+            const errMsg = data.error?.message || `TTS HTTP ${response.status}`;
+            lastErr = new Error(errMsg);
+            if (response.status === 429 || /quota|rate|limit/i.test(errMsg)) {
+              const isDailyQuota = /per_day|per_model_per_day/i.test(errMsg);
+              // Place daily-exhausted model on 60-min cooldown, or RPM-limited model on 15s cooldown, and immediately fail over!
+              ttsModelCooldownUntil.set(modelName, Date.now() + (isDailyQuota ? 3600_000 : 15_000));
+            }
           }
         } catch (e) {
           lastErr = e;
         }
-
-        if (attempt < 3) {
-          await new Promise(r => setTimeout(r, 350 * attempt));
-        }
       }
 
       if (!audioPart) {
-        throw lastErr || new Error('Neural TTS generation failed');
+        throw lastErr || new Error('Neural TTS generation failed across all models');
       }
 
       const rawBuffer = Buffer.from(audioPart.data, 'base64');
@@ -227,8 +258,8 @@ async function getOrSynthesizeTtsWav(text, voiceName = 'Aoede', apiKey = DEFAULT
       const normalizedPcm = normalizePcm16Buffer(rawPcm, 0.18);
       const wavBuffer = pcm16ToWavBuffer(normalizedPcm, 24000, 1);
 
-      // Keep cache bounded to 80 recent clips
-      if (ttsWavCache.size >= 80) {
+      // Keep cache bounded to 100 recent clips
+      if (ttsWavCache.size >= 100) {
         const oldestKey = ttsWavCache.keys().next().value;
         ttsWavCache.delete(oldestKey);
       }
@@ -588,6 +619,7 @@ async function handleTtsApi(req, res) {
 
     const text = (body.text || '').trim();
     const voiceName = body.voiceName || 'Aoede';
+    const forceRefresh = Boolean(body.forceRefresh);
 
     if (!text) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -595,11 +627,12 @@ async function handleTtsApi(req, res) {
       return;
     }
 
-    const wavBuffer = await getOrSynthesizeTtsWav(text, voiceName, apiKey);
+    const wavBuffer = await getOrSynthesizeTtsWav(text, voiceName, apiKey, forceRefresh);
 
     res.writeHead(200, {
       'Content-Type': 'audio/wav',
       'Content-Length': wavBuffer.length,
+      'X-Voice-Persona': voiceName,
       'Cache-Control': 'no-store'
     });
     res.end(wavBuffer);

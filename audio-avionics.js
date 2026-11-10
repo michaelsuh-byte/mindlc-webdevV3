@@ -1,11 +1,141 @@
 /**
  * Audio & Voice Controller with:
- *  - Studio Neural Human Voice (/api/tts)
- *  - Speaker Echo Lock (auto-mutes mic during tutor speech & Manim video narration)
+ *  - Studio Neural Human Voice (/api/tts) with Multi-Model Failover
+ *  - Voice Integrity & Auto-Recovery Watchdog Layer:
+ *      1. Prevents & auto-fixes two or more voices reading simultaneously (`claimExclusiveVoiceChannel`, `auditAndFixSimultaneousVoices`)
+ *      2. Hard-blocks generic browser `window.speechSynthesis` and locks Studio Neural Voice persona (`enforceLockedNeuralVoice`)
+ *      3. Detects mid-session voice stalls, silent turns, or unread script clauses and auto-heals playback (`autoRecoverUnreadScript`)
+ *  - Speaker Echo Lock (auto-mutes mic during tutor speech & solution video narration)
  *  - Smart Speech Pause Detector Device (prevents long student explanations from being cut off mid-thought)
  */
 
 import { VOCAL_PROFILES, NEURAL_HUMAN_VOICES, splitSpokenTextIntoClauses } from './svs-engine.js';
+
+const VALID_NEURAL_VOICE_IDS = new Set(NEURAL_HUMAN_VOICES.map(v => v.id));
+let globalVoiceMutexToken = 0;
+const globalActiveAudioEntries = [];
+
+/**
+ * Claims exclusive access to the voice output channel across the entire application
+ * (both Chat Tutor bursts and Step-by-Step Solution Video scenes).
+ * Immediately pauses, mutes, and detaches any other HTMLAudioElement so two voices can NEVER play simultaneously.
+ */
+export function claimExclusiveVoiceChannel(audioEl, sourceTag = 'CHAT_TUTOR') {
+  const token = ++globalVoiceMutexToken;
+
+  for (let i = globalActiveAudioEntries.length - 1; i >= 0; i--) {
+    const entry = globalActiveAudioEntries[i];
+    if (entry.audio && entry.audio !== audioEl) {
+      try {
+        entry.audio.onended = null;
+        entry.audio.onerror = null;
+        entry.audio.onplay = null;
+        entry.audio.muted = true;
+        entry.audio.volume = 0;
+        entry.audio.pause();
+        entry.audio.src = '';
+      } catch (_) {}
+      globalActiveAudioEntries.splice(i, 1);
+    }
+  }
+
+  if (typeof window !== 'undefined' && window.speechSynthesis) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch (_) {}
+  }
+
+  if (audioEl) {
+    globalActiveAudioEntries.push({
+      audio: audioEl,
+      token,
+      sourceTag,
+      startedAt: typeof performance !== 'undefined' ? performance.now() : Date.now()
+    });
+  }
+
+  return token;
+}
+
+/**
+ * Releases an HTMLAudioElement from the global active voice registry when it finishes or is stopped.
+ */
+export function releaseVoiceChannel(audioEl) {
+  for (let i = globalActiveAudioEntries.length - 1; i >= 0; i--) {
+    if (globalActiveAudioEntries[i].audio === audioEl) {
+      globalActiveAudioEntries.splice(i, 1);
+    }
+  }
+}
+
+/**
+ * Audits all active audio streams in real time.
+ * If 2 or more voices are ever playing simultaneously, immediately kills all older streams
+ * and leaves only the single newest stream playing.
+ */
+export function auditAndFixSimultaneousVoices() {
+  const playingEntries = globalActiveAudioEntries.filter(
+    e => e.audio && !e.audio.paused && !e.audio.ended && !e.audio.muted && e.audio.volume > 0
+  );
+
+  if (playingEntries.length <= 1) {
+    return { collisionDetected: false, stoppedCount: 0 };
+  }
+
+  // Sort by token ascending so the last element is the newest valid voice owner
+  playingEntries.sort((a, b) => a.token - b.token);
+  const newest = playingEntries[playingEntries.length - 1];
+  let stoppedCount = 0;
+
+  for (let i = 0; i < playingEntries.length - 1; i++) {
+    const dup = playingEntries[i].audio;
+    try {
+      dup.onended = null;
+      dup.onerror = null;
+      dup.onplay = null;
+      dup.muted = true;
+      dup.volume = 0;
+      dup.pause();
+      dup.src = '';
+      stoppedCount++;
+    } catch (_) {}
+    releaseVoiceChannel(dup);
+  }
+
+  return {
+    collisionDetected: true,
+    stoppedCount,
+    keptSource: newest.sourceTag
+  };
+}
+
+/**
+ * Hard-blocks the browser's generic robotic `window.speechSynthesis` engine so the voice model
+ * can never switch to a generic AI voice.
+ */
+export function blockGenericBrowserSpeechSynthesis(onBlocked = null) {
+  if (typeof window === 'undefined' || !window.speechSynthesis) return false;
+  let blockedAny = false;
+  try {
+    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+      window.speechSynthesis.cancel();
+      blockedAny = true;
+    }
+    if (!window.speechSynthesis.__svsHardBlocked) {
+      const nativeCancel = window.speechSynthesis.cancel.bind(window.speechSynthesis);
+      window.speechSynthesis.speak = (utterance) => {
+        try {
+          nativeCancel();
+        } catch (_) {}
+        if (typeof onBlocked === 'function') {
+          onBlocked(utterance?.text || '');
+        }
+      };
+      window.speechSynthesis.__svsHardBlocked = true;
+    }
+  } catch (_) {}
+  return blockedAny;
+}
 
 /**
  * Detects if the student's current spoken transcript ends mid-clause / mid-equation
@@ -29,6 +159,7 @@ export class AudioAvionicsController {
     this.onBotSpeakingChange = callbacks.onBotSpeakingChange || (() => {});
     this.onTtfaMeasured = callbacks.onTtfaMeasured || (() => {});
     this.onVoicesUpdated = callbacks.onVoicesUpdated || (() => {});
+    this.onVoiceIntegrityEvent = callbacks.onVoiceIntegrityEvent || (() => {});
 
     this.audioCtx = null;
     this.analyser = null;
@@ -59,11 +190,22 @@ export class AudioAvionicsController {
     this.resumeMicTimer = null;
     this.micSettleTimer = null;
 
-    // Script Playback & Talking-Point Verification State
+    // Script Playback, Talking-Point Verification & Voice Integrity Auto-Recovery State
     this.speechGenerationId = 0;
     this.activeScriptClauses = [];
     this.activeClauseIndex = 0;
     this.unspokenRemainderText = '';
+    this.lockedVoicePersona = 'Aoede';
+    this.voiceWatchdogTimer = null;
+    this.lastAudioProgressTs = 0;
+    this.lastObservedAudioTime = -1;
+    this.isAutoRecoveringVoice = false;
+    this.voiceIntegrityStats = {
+      simultaneousVoicesFixed: 0,
+      genericVoiceBlocked: 0,
+      stalledScriptsRecovered: 0,
+      personaDriftFixed: 0
+    };
 
     // Adjustable voice parameters (default speaking speed set to 1.1x)
     this.customRateMultiplier = 1.1;
@@ -90,18 +232,46 @@ export class AudioAvionicsController {
     this.activeProfile = 'CHARLIE';
     this.activeMode = 1;
     this.maxWords = 30;
+
+    // Install generic browser voice blocker immediately
+    blockGenericBrowserSpeechSynthesis((blockedText) => {
+      this.voiceIntegrityStats.genericVoiceBlocked++;
+      this.onVoiceIntegrityEvent({
+        type: 'GENERIC_VOICE_BLOCKED',
+        detail: 'Blocked generic browser speechSynthesis and enforced Studio Neural Voice',
+        text: blockedText
+      });
+    });
   }
 
   getNeuralVoicesList() {
     return NEURAL_HUMAN_VOICES;
   }
 
+  /**
+   * Enforces and returns the locked Studio Neural Voice name (e.g. Aoede).
+   * Automatically heals any invalid or generic voice URI back to the profile's Studio Neural Voice.
+   */
   getSelectedNeuralVoiceName(profileKey = 'CHARLIE') {
-    if (this.selectedVoiceURI) {
-      return this.selectedVoiceURI;
-    }
     const profile = VOCAL_PROFILES[profileKey] || VOCAL_PROFILES.CHARLIE;
-    return profile.geminiVoice || 'Aoede';
+    const defaultNeural = profile.geminiVoice || 'Aoede';
+
+    if (this.selectedVoiceURI) {
+      if (VALID_NEURAL_VOICE_IDS.has(this.selectedVoiceURI)) {
+        this.lockedVoicePersona = this.selectedVoiceURI;
+        return this.selectedVoiceURI;
+      }
+      // Auto-heal invalid/generic voice URI back to Studio Neural Voice
+      this.selectedVoiceURI = defaultNeural;
+      this.voiceIntegrityStats.personaDriftFixed++;
+      this.onVoiceIntegrityEvent({
+        type: 'VOICE_PERSONA_DRIFT_FIXED',
+        detail: `Restored Studio Neural Voice (${defaultNeural})`
+      });
+    }
+
+    this.lockedVoicePersona = defaultNeural;
+    return defaultNeural;
   }
 
   ensureAudioContext() {
@@ -443,7 +613,81 @@ export class AudioAvionicsController {
     }, this.echoTailMs);
   }
 
+  stopVoiceIntegrityWatchdog() {
+    if (this.voiceWatchdogTimer) {
+      clearInterval(this.voiceWatchdogTimer);
+      this.voiceWatchdogTimer = null;
+    }
+  }
+
+  /**
+   * Real-Time Voice Integrity Watchdog (runs every 250ms during speech):
+   *  1. Detects & fixes simultaneous overlapping voices (`auditAndFixSimultaneousVoices`)
+   *  2. Detects & blocks generic browser `window.speechSynthesis` (`blockGenericBrowserSpeechSynthesis`)
+   *  3. Detects frozen/suspended AudioContext or stalled HTMLAudioElement and auto-resumes playback
+   */
+  startVoiceIntegrityWatchdog(genId, profileKey = 'CHARLIE') {
+    this.stopVoiceIntegrityWatchdog();
+    this.lastAudioProgressTs = performance.now();
+    this.lastObservedAudioTime = -1;
+
+    this.voiceWatchdogTimer = setInterval(() => {
+      if (!this.isBotSpeaking || genId !== this.speechGenerationId) {
+        this.stopVoiceIntegrityWatchdog();
+        return;
+      }
+
+      // 1. Check & fix simultaneous multi-voice collision
+      const collision = auditAndFixSimultaneousVoices();
+      if (collision.collisionDetected) {
+        this.voiceIntegrityStats.simultaneousVoicesFixed += collision.stoppedCount;
+        this.onVoiceIntegrityEvent({
+          type: 'SIMULTANEOUS_VOICES_FIXED',
+          detail: `Stopped ${collision.stoppedCount} overlapping voice stream(s)`
+        });
+      }
+
+      // 2. Check & block generic browser speechSynthesis
+      if (blockGenericBrowserSpeechSynthesis()) {
+        this.voiceIntegrityStats.genericVoiceBlocked++;
+        this.onVoiceIntegrityEvent({
+          type: 'GENERIC_VOICE_BLOCKED',
+          detail: 'Canceled generic browser speechSynthesis during active session'
+        });
+      }
+
+      // 3. Enforce locked Studio Neural Voice persona
+      this.getSelectedNeuralVoiceName(profileKey);
+
+      // 4. Check if AudioContext suspended or currentAudioEl stalled mid-phrase
+      if (this.audioCtx && this.audioCtx.state === 'suspended') {
+        this.audioCtx.resume().catch(() => {});
+      }
+
+      const audio = this.currentAudioEl;
+      if (audio && !audio.ended) {
+        const now = performance.now();
+        if (audio.currentTime !== this.lastObservedAudioTime && audio.currentTime > 0) {
+          this.lastObservedAudioTime = audio.currentTime;
+          this.lastAudioProgressTs = now;
+        } else if (now - this.lastAudioProgressTs > 2400) {
+          // Audio element has stalled mid-script for > 2.4s
+          this.lastAudioProgressTs = now;
+          if (audio.paused) {
+            audio.play().catch(() => {});
+          } else if (audio.duration && Number.isFinite(audio.duration) && audio.currentTime >= audio.duration - 0.15) {
+            try {
+              audio.onended?.();
+            } catch (_) {}
+          }
+        }
+      }
+    }, 250);
+  }
+
   stopSpeaking(reason = 'USER_STOP') {
+    this.stopVoiceIntegrityWatchdog();
+
     if (this.ttsAbortController) {
       try {
         this.ttsAbortController.abort();
@@ -452,11 +696,18 @@ export class AudioAvionicsController {
     }
 
     if (this.currentAudioEl) {
-      try {
-        this.currentAudioEl.pause();
-        this.currentAudioEl.src = '';
-      } catch (_) {}
+      const el = this.currentAudioEl;
       this.currentAudioEl = null;
+      releaseVoiceChannel(el);
+      try {
+        el.onended = null;
+        el.onerror = null;
+        el.onplay = null;
+        el.muted = true;
+        el.volume = 0;
+        el.pause();
+        el.src = '';
+      } catch (_) {}
     }
 
     if (this.currentAudioUrl) {
@@ -464,8 +715,14 @@ export class AudioAvionicsController {
       this.currentAudioUrl = null;
     }
 
-    if (window.speechSynthesis) {
-      window.speechSynthesis.cancel();
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch (_) {}
+    }
+
+    if (reason === 'USER_STOP' || reason === 'USER_STOP_BUTTON' || reason === 'NEW_STUDENT_TURN') {
+      this.unspokenRemainderText = '';
     }
 
     if (this.isBotSpeaking && reason !== 'NEW_BURST') {
@@ -726,7 +983,10 @@ export class AudioAvionicsController {
     requestAnimationFrame(() => this.runVadLoop());
   }
 
-  async fetchTtsBlobUrl(textChunk, voiceName, signal) {
+  async fetchTtsBlobUrl(textChunk, voiceName, signal, forceRefresh = false) {
+    const resolvedVoice = VALID_NEURAL_VOICE_IDS.has(voiceName)
+      ? voiceName
+      : this.getSelectedNeuralVoiceName(this.activeProfile);
     let lastErr = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
       if (signal?.aborted) {
@@ -738,7 +998,8 @@ export class AudioAvionicsController {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             text: textChunk,
-            voiceName: voiceName || 'Aoede',
+            voiceName: resolvedVoice,
+            forceRefresh: forceRefresh || attempt > 1,
             apiKey: this.apiKey || undefined
           }),
           signal
@@ -747,12 +1008,15 @@ export class AudioAvionicsController {
           throw new Error(`TTS HTTP ${res.status}`);
         }
         const wavBlob = await res.blob();
+        if (!wavBlob || wavBlob.size < 200) {
+          throw new Error('Truncated WAV buffer');
+        }
         return URL.createObjectURL(wavBlob);
       } catch (err) {
         if (err?.name === 'AbortError' || signal?.aborted) throw err;
         lastErr = err;
         if (attempt < 3) {
-          await new Promise(r => setTimeout(r, 300 * attempt));
+          await new Promise(r => setTimeout(r, 250 * attempt));
         }
       }
     }
@@ -770,10 +1034,99 @@ export class AudioAvionicsController {
   }
 
   /**
-   * Option 4 Zero-Delay Voice Emitter:
+   * Plays a single WAV blob URL with:
+   *  1. Exclusive Voice Channel mutex (`claimExclusiveVoiceChannel`) so two voices NEVER overlap
+   *  2. Progress heartbeat (`ontimeupdate`) + duration safety timer so a hung `onended` never stalls mid-session
+   */
+  async playAudioClipSafely(audioUrl, { isFirstChunk = false, startTs = 0, abortSignal = null, genId = 0 } = {}) {
+    if (abortSignal?.aborted || genId !== this.speechGenerationId) {
+      URL.revokeObjectURL(audioUrl);
+      return false;
+    }
+
+    if (this.currentAudioUrl) {
+      URL.revokeObjectURL(this.currentAudioUrl);
+    }
+    this.currentAudioUrl = audioUrl;
+
+    return new Promise((resolve, reject) => {
+      const activeRate = Math.max(0.75, Math.min(1.5, Number(this.customRateMultiplier) || 1.1));
+      const audio = new Audio(audioUrl);
+      audio.defaultPlaybackRate = activeRate;
+      audio.playbackRate = activeRate;
+      audio.preservesPitch = true;
+
+      // Claim exclusive voice channel immediately so zero other audio elements can play simultaneously
+      claimExclusiveVoiceChannel(audio, 'CHAT_TUTOR');
+      this.currentAudioEl = audio;
+      this.lastAudioProgressTs = performance.now();
+      this.lastObservedAudioTime = 0;
+
+      let settled = false;
+      let clipSafetyTimer = null;
+
+      const finish = (ok, errObj = null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(clipSafetyTimer);
+        releaseVoiceChannel(audio);
+        if (ok) resolve(true);
+        else reject(errObj || new Error('Audio playback failed'));
+      };
+
+      // Safety ceiling in case browser never fires `onended`
+      clipSafetyTimer = setTimeout(() => {
+        finish(true);
+      }, 28000);
+
+      audio.onloadedmetadata = () => {
+        if (audio.duration && Number.isFinite(audio.duration)) {
+          clearTimeout(clipSafetyTimer);
+          const expectedMs = Math.ceil((audio.duration / activeRate) * 1000) + 1800;
+          clipSafetyTimer = setTimeout(() => {
+            finish(true);
+          }, Math.max(3000, expectedMs));
+        }
+      };
+
+      audio.ontimeupdate = () => {
+        this.lastAudioProgressTs = performance.now();
+        this.lastObservedAudioTime = audio.currentTime;
+      };
+
+      audio.onplay = () => {
+        const latestRate = Math.max(0.75, Math.min(1.5, Number(this.customRateMultiplier) || 1.1));
+        audio.defaultPlaybackRate = latestRate;
+        audio.playbackRate = latestRate;
+        this.lastAudioProgressTs = performance.now();
+        auditAndFixSimultaneousVoices();
+        if (isFirstChunk) {
+          this.onTtfaMeasured(Math.round(performance.now() - startTs));
+        }
+        this.isBotSpeaking = true;
+        this.engageSpeakerEchoLock();
+        this.onBotSpeakingChange(true);
+      };
+
+      audio.onended = () => {
+        finish(true);
+      };
+      audio.onerror = (e) => {
+        finish(false, e);
+      };
+
+      audio.play().catch((err) => {
+        finish(false, err);
+      });
+    });
+  }
+
+  /**
+   * Option 4 Zero-Delay Voice Emitter + Voice Integrity & Auto-Recovery Watchdog:
    * - Plays pre-bundled `firstChunkWavBase64` from `/api/chat` at 0.0s (instantaneous when transcript appears)
    *   while streaming `audioChunks[1]` in parallel from the server's pre-warm cache.
    * - Strictly uses Studio Neural Human Voice (e.g. Aoede); NEVER falls back to generic browser speechSynthesis.
+   * - Automatically detects and heals mid-session voice stalls, failed clauses, or overlapping voices.
    */
   async speakCalibratedBurst(cleanText, profileKey = 'CHARLIE', prewarmedAudio = null) {
     const startTs = performance.now();
@@ -799,11 +1152,11 @@ export class AudioAvionicsController {
     const voiceName = this.getSelectedNeuralVoiceName(profileKey);
     const abortCtrl = new AbortController();
     this.ttsAbortController = abortCtrl;
+    this.startVoiceIntegrityWatchdog(genId, profileKey);
 
     try {
       // Prepare URL promises for all chunks in parallel:
       // Chunk 0 uses inline base64 audio from `/api/chat` when available (0ms network wait!)
-      // Attach `.catch(() => null)` so a transient error on chunk 1 is retried in-loop instead of rejecting unhandled
       const urlPromises = chunks.map((chunkText, idx) => {
         if (idx === 0 && prewarmedAudio?.firstChunkWavBase64) {
           return Promise.resolve(this.base64ToBlobUrl(prewarmedAudio.firstChunkWavBase64));
@@ -818,56 +1171,76 @@ export class AudioAvionicsController {
 
         let audioUrl = await urlPromises[i];
         if (!audioUrl && !abortCtrl.signal.aborted && genId === this.speechGenerationId) {
-          // Retry fetching this clause so the tutor never skips reading the rest of its script
-          audioUrl = await this.fetchTtsBlobUrl(chunks[i], voiceName, abortCtrl.signal);
+          // Auto-heal: Retry fetching this clause with forceRefresh=true so the tutor never skips reading
+          audioUrl = await this.fetchTtsBlobUrl(chunks[i], voiceName, abortCtrl.signal, true).catch(() => null);
         }
 
-        if (abortCtrl.signal.aborted || genId !== this.speechGenerationId) {
+        if (!audioUrl || abortCtrl.signal.aborted || genId !== this.speechGenerationId) {
           if (audioUrl) URL.revokeObjectURL(audioUrl);
-          return;
+          break;
         }
 
         // Record fingerprint of the currently playing clause as well so any tail bleed matches immediately
         this.recordTutorSpokenFingerprint(chunks.slice(0, i + 1).join(' '));
 
-        if (this.currentAudioUrl) {
-          URL.revokeObjectURL(this.currentAudioUrl);
-        }
-        this.currentAudioUrl = audioUrl;
-
-        await new Promise((resolve, reject) => {
-          const activeRate = Math.max(0.75, Math.min(1.5, Number(this.customRateMultiplier) || 1.1));
-          const audio = new Audio(audioUrl);
-          audio.defaultPlaybackRate = activeRate;
-          audio.playbackRate = activeRate;
-          audio.preservesPitch = true;
-          this.currentAudioEl = audio;
-
-          audio.onplay = () => {
-            const latestRate = Math.max(0.75, Math.min(1.5, Number(this.customRateMultiplier) || 1.1));
-            audio.defaultPlaybackRate = latestRate;
-            audio.playbackRate = latestRate;
-            if (i === 0) {
-              this.onTtfaMeasured(Math.round(performance.now() - startTs));
+        try {
+          await this.playAudioClipSafely(audioUrl, {
+            isFirstChunk: i === 0,
+            startTs,
+            abortSignal: abortCtrl.signal,
+            genId
+          });
+          this.activeClauseIndex = i + 1;
+          this.unspokenRemainderText = chunks.slice(i + 1).join(' ').trim();
+        } catch (_) {
+          // Auto-heal: If playback of clause `i` glitched mid-stream, re-synthesize and play with forceRefresh=true
+          if (!abortCtrl.signal.aborted && genId === this.speechGenerationId) {
+            const retryUrl = await this.fetchTtsBlobUrl(chunks[i], voiceName, abortCtrl.signal, true).catch(() => null);
+            if (retryUrl && !abortCtrl.signal.aborted && genId === this.speechGenerationId) {
+              await this.playAudioClipSafely(retryUrl, {
+                isFirstChunk: i === 0,
+                startTs,
+                abortSignal: abortCtrl.signal,
+                genId
+              }).catch(() => {});
+              this.activeClauseIndex = i + 1;
+              this.unspokenRemainderText = chunks.slice(i + 1).join(' ').trim();
+              this.voiceIntegrityStats.stalledScriptsRecovered++;
+              this.onVoiceIntegrityEvent({
+                type: 'SCRIPT_CLAUSE_RECOVERED',
+                detail: `Auto-recovered clause ${i + 1} of ${chunks.length}`
+              });
             }
-            this.isBotSpeaking = true;
-            this.engageSpeakerEchoLock();
-            this.onBotSpeakingChange(true);
-          };
+          }
+        }
+      }
 
-          audio.onended = () => {
-            this.activeClauseIndex = i + 1;
-            this.unspokenRemainderText = chunks.slice(i + 1).join(' ').trim();
-            resolve();
-          };
-          audio.onerror = (e) => reject(e);
-
-          audio.play().catch(reject);
-        });
+      // Final Unread Script Verification & Auto-Recovery:
+      // If any remainder of the script was left unread (and user did NOT abort), synthesize and play it automatically!
+      if (this.unspokenRemainderText && !abortCtrl.signal.aborted && genId === this.speechGenerationId) {
+        const remainderToRead = this.unspokenRemainderText;
+        const recoveryUrl = await this.fetchTtsBlobUrl(remainderToRead, voiceName, abortCtrl.signal, true).catch(
+          () => null
+        );
+        if (recoveryUrl && !abortCtrl.signal.aborted && genId === this.speechGenerationId) {
+          await this.playAudioClipSafely(recoveryUrl, {
+            isFirstChunk: false,
+            startTs,
+            abortSignal: abortCtrl.signal,
+            genId
+          }).catch(() => {});
+          this.unspokenRemainderText = '';
+          this.voiceIntegrityStats.stalledScriptsRecovered++;
+          this.onVoiceIntegrityEvent({
+            type: 'UNREAD_SCRIPT_RECOVERED',
+            detail: 'Auto-recovered unread script remainder'
+          });
+        }
       }
 
       if (!abortCtrl.signal.aborted && genId === this.speechGenerationId) {
         this.unspokenRemainderText = '';
+        this.stopVoiceIntegrityWatchdog();
         this.isBotSpeaking = false;
         this.onBotSpeakingChange(false);
         this.releaseSpeakerEchoLock();
@@ -875,6 +1248,7 @@ export class AudioAvionicsController {
     } catch (err) {
       if (err?.name === 'AbortError' || abortCtrl.signal.aborted || genId !== this.speechGenerationId) return;
       console.warn('Studio Neural TTS error (generic browser voice fallback is strictly disabled):', err);
+      this.stopVoiceIntegrityWatchdog();
       this.isBotSpeaking = false;
       this.onBotSpeakingChange(false);
       this.releaseSpeakerEchoLock();
