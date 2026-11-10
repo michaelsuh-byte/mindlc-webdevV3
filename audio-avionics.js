@@ -41,13 +41,13 @@ export class AudioAvionicsController {
     // Smart Speech Pause Detector parameters
     // Default 2400ms (2.4s) pause tolerance so natural breathing/thinking pauses never cut off long explanations
     this.vadSilenceThresholdMs = 2400;
-    this.vadEnergyThreshold = 0.026;
+    this.vadEnergyThreshold = 0.045;
     this.manualSendHoldMode = false; // When true, never auto-submits until user clicks Send
 
     // Speaker Echo Protection parameters
     this.echoProtectionEnabled = true;
     this.echoCooldownUntil = 0;
-    this.echoTailMs = 180;
+    this.echoTailMs = 260;
 
     this.isMicActive = false;
     this.isUserSpeaking = false;
@@ -61,12 +61,14 @@ export class AudioAvionicsController {
     this.customPitchMultiplier = 1.0;
     this.selectedVoiceURI = '';
 
-    // Web Speech API STT buffer (kept warm across turns for 0ms resume)
+    // Web Speech API STT state (hard-aborted during tutor speech, freshly instantiated on resume)
     this.recognition = null;
+    this.recognitionPausedForPlayback = false;
     this.isRecognitionRunning = false;
     this.recognitionRestartTimer = null;
     this.lastWatchdogTimestamp = 0;
-    this.echoTaintedPrefixByIndex = new Map();
+    this.lastTutorSpokenNormalized = '';
+    this.lastTutorSpokenWords = new Set();
     this.finalizedTranscript = '';
     this.currentInterimTranscript = '';
     this.vadDataArray = null;
@@ -162,42 +164,91 @@ export class AudioAvionicsController {
   }
 
   /**
-   * Ensures Web Speech Recognition is running without throwing InvalidStateError
-   * or suffering cold-start drops when transitioning between speaker output and user voice.
+   * Records the tutor's spoken text so any late speaker bleed can also be filtered out by content
    */
-  safeStartRecognition() {
-    if (!this.recognition || !this.isMicActive || this.isRecognitionRunning) return;
+  recordTutorSpokenFingerprint(text = '') {
+    const norm = String(text || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    this.lastTutorSpokenNormalized = norm;
+    this.lastTutorSpokenWords = new Set(norm.split(' ').filter(w => w.length >= 3));
+  }
+
+  /**
+   * Secondary acoustic echo guard: checks if a recognized phrase is actually the tutor's own explanation
+   * bleeding from the speakers.
+   */
+  isLikelyTutorEcho(candidateText = '') {
+    if (!this.echoProtectionEnabled || !this.lastTutorSpokenNormalized) return false;
+    const norm = String(candidateText || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!norm) return false;
+
+    const words = norm.split(' ').filter(Boolean);
+    if (words.length >= 4 && this.lastTutorSpokenNormalized.includes(norm)) {
+      return true;
+    }
+
+    const sigWords = words.filter(w => w.length >= 3);
+    if (sigWords.length >= 5 && this.lastTutorSpokenWords.size > 0) {
+      let matches = 0;
+      for (const w of sigWords) {
+        if (this.lastTutorSpokenWords.has(w)) matches++;
+      }
+      if (matches / sigWords.length >= 0.72) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Completely detaches and aborts the active SpeechRecognition instance so zero OS microphone
+   * audio can be transcribed while the tutor is speaking.
+   */
+  destroyRecognitionInstance() {
     clearTimeout(this.recognitionRestartTimer);
-    try {
-      this.recognition.start();
-    } catch (_) {
-      this.recognitionRestartTimer = setTimeout(() => {
-        if (this.isMicActive && !this.isRecognitionRunning && this.recognition) {
-          try {
-            this.recognition.start();
-          } catch (_) {}
-        }
-      }, 120);
+    this.isRecognitionRunning = false;
+    if (this.recognition) {
+      const rec = this.recognition;
+      this.recognition = null;
+      try {
+        rec.onstart = null;
+        rec.onresult = null;
+        rec.onerror = null;
+        rec.onend = null;
+        rec.abort();
+      } catch (_) {}
     }
   }
 
   /**
-   * Mutes microphone hardware track & gates speech recognition while the tutor or solution video is speaking.
-   * Crucially keeps `SpeechRecognition` warm and connected (no `.abort()` cold-start delay) so user voice is
-   * picked up on the very first word as soon as the tutor finishes speaking.
+   * Mutes microphone hardware track & completely aborts Web Speech Recognition while the tutor
+   * or solution video is speaking so the tutor's voice is NEVER picked up by the microphone.
    */
   engageSpeakerEchoLock() {
     clearTimeout(this.resumeMicTimer);
+    clearTimeout(this.recognitionRestartTimer);
     this.clearPendingTranscript();
+    this.onInterimTranscript('');
     this.isUserSpeaking = false;
 
     if (!this.echoProtectionEnabled) return;
+
+    this.recognitionPausedForPlayback = true;
 
     if (this.micStream) {
       this.micStream.getAudioTracks().forEach(track => {
         track.enabled = false;
       });
     }
+
+    this.destroyRecognitionInstance();
 
     this.onVadStateChange({
       isSpeaking: false,
@@ -208,27 +259,19 @@ export class AudioAvionicsController {
   }
 
   /**
-   * Releases the speaker echo lock immediately on the hardware mic track and clears echo gate after 180ms
-   * so the user's first word is never dropped when they start speaking.
+   * Releases the speaker echo lock after a brief 260ms room-reverb tail and creates a fresh
+   * SpeechRecognition instance so it starts cleanly without Chrome's aborted-instance state bug.
    */
   releaseSpeakerEchoLock() {
     clearTimeout(this.resumeMicTimer);
     this.clearPendingTranscript();
     this.echoCooldownUntil = performance.now() + this.echoTailMs;
 
-    // Re-enable hardware audio track immediately so browser audio capture has 0ms warm-up
-    if (this.micStream && this.isMicActive) {
-      this.micStream.getAudioTracks().forEach(track => {
-        track.enabled = true;
-      });
-    }
-
-    if (this.isMicActive) {
-      this.safeStartRecognition();
-    }
-
     this.resumeMicTimer = setTimeout(() => {
       if (this.isBotSpeaking) return;
+
+      this.recognitionPausedForPlayback = false;
+      this.clearPendingTranscript();
 
       if (this.micStream && this.isMicActive) {
         this.micStream.getAudioTracks().forEach(track => {
@@ -237,7 +280,7 @@ export class AudioAvionicsController {
       }
 
       if (this.isMicActive) {
-        this.safeStartRecognition();
+        this.startWebSpeechRecognition();
       }
 
       this.onVadStateChange({
@@ -274,7 +317,7 @@ export class AudioAvionicsController {
       window.speechSynthesis.cancel();
     }
 
-    if (this.isBotSpeaking) {
+    if (this.isBotSpeaking && reason !== 'NEW_BURST') {
       this.isBotSpeaking = false;
       this.onBotSpeakingChange(false);
       this.releaseSpeakerEchoLock();
@@ -308,10 +351,12 @@ export class AudioAvionicsController {
 
       this.isMicActive = true;
       this.clearPendingTranscript();
-      this.startWebSpeechRecognition();
 
       if (this.isBotSpeaking && this.echoProtectionEnabled) {
         this.engageSpeakerEchoLock();
+      } else {
+        this.recognitionPausedForPlayback = false;
+        this.startWebSpeechRecognition();
       }
 
       this.runVadLoop();
@@ -325,22 +370,10 @@ export class AudioAvionicsController {
   stopMicrophone() {
     this.isMicActive = false;
     this.isUserSpeaking = false;
-    this.isRecognitionRunning = false;
+    this.recognitionPausedForPlayback = false;
     clearTimeout(this.resumeMicTimer);
-    clearTimeout(this.recognitionRestartTimer);
-    this.echoTaintedPrefixByIndex.clear();
+    this.destroyRecognitionInstance();
     this.clearPendingTranscript();
-
-    if (this.recognition) {
-      try {
-        this.recognition.onstart = null;
-        this.recognition.onend = null;
-        this.recognition.onerror = null;
-        this.recognition.onresult = null;
-        this.recognition.abort();
-      } catch (_) {}
-      this.recognition = null;
-    }
 
     if (this.micStream) {
       this.micStream.getTracks().forEach(t => t.stop());
@@ -352,30 +385,32 @@ export class AudioAvionicsController {
 
   startWebSpeechRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
+    if (!SpeechRecognition || !this.isMicActive) return;
 
-    this.recognition = new SpeechRecognition();
-    this.recognition.continuous = true;
-    this.recognition.interimResults = true;
-    this.recognition.lang = 'en-CA';
-    this.echoTaintedPrefixByIndex.clear();
+    if (this.echoProtectionEnabled && (this.isBotSpeaking || this.recognitionPausedForPlayback)) {
+      return;
+    }
 
-    this.recognition.onstart = () => {
+    this.destroyRecognitionInstance();
+
+    const rec = new SpeechRecognition();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = 'en-CA';
+    this.recognition = rec;
+
+    rec.onstart = () => {
+      if (this.recognition !== rec) return;
       this.isRecognitionRunning = true;
     };
 
-    this.recognition.onresult = (event) => {
+    rec.onresult = (event) => {
+      if (this.recognition !== rec) return;
       const now = performance.now();
-      const inEchoWindow =
-        this.echoProtectionEnabled && (this.isBotSpeaking || now < this.echoCooldownUntil);
-
-      if (inEchoWindow) {
-        // Record any transcript prefix produced while speaker was active so speaker bleed is stripped
-        // without aborting the recognition stream or dropping the student's first word afterward.
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const rawEcho = String(event.results[i][0]?.transcript || '');
-          this.echoTaintedPrefixByIndex.set(i, rawEcho);
-        }
+      if (
+        this.echoProtectionEnabled &&
+        (this.isBotSpeaking || this.recognitionPausedForPlayback || now < this.echoCooldownUntil)
+      ) {
         this.clearPendingTranscript();
         return;
       }
@@ -384,25 +419,14 @@ export class AudioAvionicsController {
       let finalChunk = '';
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        let transcript = String(event.results[i][0]?.transcript || '');
-        const taintedPrefix = this.echoTaintedPrefixByIndex.get(i);
-        if (taintedPrefix) {
-          if (transcript.toLowerCase().startsWith(taintedPrefix.toLowerCase())) {
-            transcript = transcript.slice(taintedPrefix.length);
-          } else if (event.results[i].isFinal && transcript.trim() === taintedPrefix.trim()) {
-            transcript = '';
-          }
-          if (event.results[i].isFinal) {
-            this.echoTaintedPrefixByIndex.delete(i);
-          }
-        }
-
-        if (!transcript.trim()) continue;
+        const transcript = String(event.results[i][0]?.transcript || '').trim();
+        if (!transcript) continue;
+        if (this.isLikelyTutorEcho(transcript)) continue;
 
         if (event.results[i].isFinal) {
           finalChunk += transcript + ' ';
         } else {
-          interim += transcript;
+          interim += transcript + ' ';
         }
       }
 
@@ -419,25 +443,36 @@ export class AudioAvionicsController {
 
       const combined = this.getCombinedPendingTranscript();
       if (combined) {
+        if (this.isLikelyTutorEcho(combined)) {
+          this.clearPendingTranscript();
+          return;
+        }
         this.onInterimTranscript(combined);
       }
     };
 
-    this.recognition.onerror = (event) => {
+    rec.onerror = (event) => {
+      if (this.recognition !== rec) return;
       if (event?.error === 'not-allowed' || event?.error === 'service-not-allowed') {
         this.isRecognitionRunning = false;
       }
     };
 
-    this.recognition.onend = () => {
+    rec.onend = () => {
+      if (this.recognition !== rec) return;
       this.isRecognitionRunning = false;
-      this.echoTaintedPrefixByIndex.clear();
-      if (this.isMicActive && this.recognition) {
-        this.safeStartRecognition();
+      if (this.isMicActive && !this.recognitionPausedForPlayback && !this.isBotSpeaking) {
+        this.recognitionRestartTimer = setTimeout(() => {
+          if (this.isMicActive && !this.recognitionPausedForPlayback && !this.isBotSpeaking) {
+            this.startWebSpeechRecognition();
+          }
+        }, 80);
       }
     };
 
-    this.safeStartRecognition();
+    try {
+      rec.start();
+    } catch (_) {}
   }
 
   /**
@@ -449,17 +484,15 @@ export class AudioAvionicsController {
     if (!this.isMicActive || !this.analyser) return;
 
     const now = performance.now();
-
-    // Watchdog: ensure Web Speech Recognition stays warm and active whenever mic is on
-    if (!this.isRecognitionRunning && now - this.lastWatchdogTimestamp > 450) {
-      this.lastWatchdogTimestamp = now;
-      this.safeStartRecognition();
-    }
-
-    const isMutedForEcho = this.echoProtectionEnabled && (this.isBotSpeaking || now < this.echoCooldownUntil);
+    const isMutedForEcho =
+      this.echoProtectionEnabled &&
+      (this.isBotSpeaking || this.recognitionPausedForPlayback || now < this.echoCooldownUntil);
 
     if (isMutedForEcho) {
       this.isUserSpeaking = false;
+      if (this.recognition) {
+        this.destroyRecognitionInstance();
+      }
       this.onVadStateChange({
         isSpeaking: false,
         rms: 0,
@@ -468,6 +501,12 @@ export class AudioAvionicsController {
       });
       requestAnimationFrame(() => this.runVadLoop());
       return;
+    }
+
+    // Watchdog: when NOT muted for echo, ensure a fresh SpeechRecognition instance is actively running
+    if (!this.isRecognitionRunning && now - this.lastWatchdogTimestamp > 450) {
+      this.lastWatchdogTimestamp = now;
+      this.startWebSpeechRecognition();
     }
 
     const dataArray = this.vadDataArray || new Uint8Array(this.analyser.frequencyBinCount);
@@ -482,14 +521,13 @@ export class AudioAvionicsController {
 
     if (rms > this.vadEnergyThreshold) {
       this.lastVoiceActivityTime = now;
-      this.lastSpeechEventTimestamp = now;
       if (!this.isUserSpeaking) {
         this.isUserSpeaking = true;
       }
     }
 
     const silenceElapsed = this.lastVoiceActivityTime > 0 ? Math.max(0, now - this.lastVoiceActivityTime) : 0;
-    if (this.isUserSpeaking && silenceElapsed >= 350) {
+    if (this.isUserSpeaking && silenceElapsed >= 320) {
       this.isUserSpeaking = false;
     }
 
@@ -512,7 +550,7 @@ export class AudioAvionicsController {
         targetMs: Math.round(targetWaitMs)
       });
 
-      if (!this.manualSendHoldMode && pauseSinceSpeechMs >= targetWaitMs && !this.isUserSpeaking) {
+      if (!this.manualSendHoldMode && pauseSinceSpeechMs >= targetWaitMs) {
         this.flushPendingSpeechNow();
       }
     } else {
@@ -598,6 +636,7 @@ export class AudioAvionicsController {
 
     if (chunks.length === 0) return;
 
+    this.recordTutorSpokenFingerprint(chunks.join(' '));
     this.isBotSpeaking = true;
     this.engageSpeakerEchoLock();
     this.onBotSpeakingChange(true);

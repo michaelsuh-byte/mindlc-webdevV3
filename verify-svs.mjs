@@ -186,8 +186,22 @@ const calcRms = (buf) => {
 };
 assert.equal(Math.abs(calcRms(normQuiet) - calcRms(normLoud)) < 0.03, true, 'Quiet and loud TTS clips are normalized to consistent RMS loudness');
 
-// 16. Verify Warm Mic Resume & Section 16 Topic Anchor / Clue-Gathering Gap Discovery
-assert.equal(testAvionics.echoTailMs, 180, 'Echo cooldown tail is set to 180ms for instant mic resume');
+// 16. Verify Hard Mic Mute During Tutor Speech & Section 16 Topic Anchor / Clue-Gathering Gap Discovery
+assert.equal(testAvionics.echoTailMs, 260, 'Echo cooldown tail is set to 260ms before fresh SpeechRecognition start');
+testAvionics.recordTutorSpokenFingerprint('Before doing the math, what graphical feature are we looking for when an equation equals zero?');
+assert.equal(
+  testAvionics.isLikelyTutorEcho('what graphical feature are we looking for when an equation equals zero'),
+  true,
+  'Speaker echo fingerprint filter rejects tutor explanation bleed'
+);
+assert.equal(
+  testAvionics.isLikelyTutorEcho('the x intercepts'),
+  false,
+  'Speaker echo fingerprint filter allows genuine student answers'
+);
+testAvionics.engageSpeakerEchoLock();
+assert.equal(testAvionics.recognitionPausedForPlayback, true, 'engageSpeakerEchoLock sets recognitionPausedForPlayback=true');
+assert.equal(testAvionics.recognition, null, 'engageSpeakerEchoLock completely destroys SpeechRecognition instance while tutor speaks');
 assert.equal(sysPrompt.includes('16. TOPIC ANCHOR, CLUE-GATHERING GAP DISCOVERY & GROUND-UP LOGICAL FLOW'), true, 'System prompt includes Section 16 Topic Anchor & Clue-Gathering rules');
 
 const mcAnchor = 'What is a real-world application of fractions in Minecraft?';

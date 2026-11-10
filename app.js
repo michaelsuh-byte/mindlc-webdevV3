@@ -1072,6 +1072,8 @@ class SocraticGeminiChatApp {
       this.gapAbortController = null;
     }
     this.avionics.stopSpeaking('NEW_STUDENT_TURN');
+    // Immediately engage echo lock while the tutor generates and begins speaking its explanation
+    this.avionics.engageSpeakerEchoLock();
 
     this.appendChatMessage('student', utterance);
 
