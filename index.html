@@ -25,7 +25,7 @@
         <span class="sparkle-icon">✦</span>
         <div>
           <h1>Ontario STEM Tutor</h1>
-          <span class="subtitle">Grades 9–12 • Interactive Graph + Step-by-Step Video + Natural Voice</span>
+          <span class="subtitle">Grades 6–12 • Visual HUD Canvas + Interactive Graph + Step-by-Step Video</span>
         </div>
       </div>
 
@@ -52,9 +52,82 @@
 
     <!-- MAIN WORKSPACE -->
     <div class="main-workspace" id="mainWorkspace">
-      <!-- GEMINI CHAT WINDOW -->
+      <!-- LEFT-SIDE VISUAL HUD CANVAS PANEL (CHANNEL 1: QUESTION, DIAGRAM & STEP PROGRESSION) -->
+      <aside class="hud-canvas-panel" id="hudCanvasPanel" aria-label="Visual HUD and Step Progression Canvas">
+        <div class="hud-canvas-header">
+          <div class="hud-canvas-title-wrap">
+            <span class="hud-canvas-icon">📐</span>
+            <div>
+              <h2>Visual HUD Canvas</h2>
+              <span class="hud-canvas-sub" id="hudSessionStatusBadge">Active Problem &amp; Step Progression</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            class="hud-reset-btn"
+            id="btnResetHudCanvas"
+            title="Refresh HUD Canvas for a new question"
+          >
+            ↺ Refresh
+          </button>
+        </div>
+
+        <!-- 1. EXPLICIT ACTIVE PROBLEM, EQUATION & VISUAL QUESTION CARD -->
+        <section class="hud-active-question-card" id="hudActiveQuestionCard">
+          <div class="hud-card-top-row">
+            <span class="hud-channel-badge">ACTIVE PROBLEM / EXAMPLE</span>
+            <span class="hud-latency-tag" id="hudRenderLatency">0.2 ms</span>
+          </div>
+
+          <div class="hud-topic-title" id="hudTopicTitle">
+            Select a starter problem or ask any Grade 6–12 STEM question to begin.
+          </div>
+
+          <!-- KaTeX Equation / Example Display -->
+          <div class="live-hud-banner" id="liveHudBanner">
+            <div class="live-hud-equation" id="liveHudEquation">
+              \text{Ready: Ask any math or science question!}
+            </div>
+          </div>
+
+          <!-- Explicit Visual Question Box (Always shows what the tutor is currently asking) -->
+          <div class="hud-current-prompt-box" id="hudCurrentPromptBox">
+            <span class="hud-prompt-label">🎯 QUESTION BEING ASKED NOW:</span>
+            <p class="hud-current-question-text" id="hudCurrentQuestionText">
+              What math or science question would you like to explore today?
+            </p>
+          </div>
+        </section>
+
+        <!-- 2. ELEMENTARY / CONCEPT VISUAL AID DIAGRAM (SHOWN ONLY WHEN NECESSARY) -->
+        <section class="hud-diagram-section" id="hudDiagramSection" hidden>
+          <div class="hud-section-header">
+            <span class="hud-section-title" id="hudDiagramTitle">Visual Concept Aid</span>
+            <span class="hud-visual-badge">Grade 6–8 / Visual Model</span>
+          </div>
+          <div class="hud-diagram-canvas-wrap">
+            <canvas id="hudDiagramCanvas" width="760" height="300"></canvas>
+          </div>
+          <p class="hud-diagram-caption" id="hudDiagramCaption"></p>
+        </section>
+
+        <!-- 3. STEP-BY-STEP PROGRESSION TRAIL FOR CURRENT QUESTION -->
+        <section class="hud-step-progression-section" id="hudStepProgressionSection">
+          <div class="hud-section-header">
+            <span class="hud-section-title">STEP PROGRESSION</span>
+            <span class="hud-step-count-badge" id="hudStepCountBadge">0 Steps</span>
+          </div>
+          <div class="hud-step-progression-list" id="hudStepProgressionList">
+            <div class="hud-step-empty">
+              Each step of our current question will appear here in order as we build the solution together.
+            </div>
+          </div>
+        </section>
+      </aside>
+
+      <!-- WIDER GEMINI CHAT WINDOW -->
       <main class="chat-column">
-        <!-- COMPACT SINGLE-LINE TELEMETRY, TIMER CONTROLS & ACTIVE HUD STRIP -->
+        <!-- COMPACT SINGLE-LINE TELEMETRY & TIMER CONTROLS STRIP -->
         <section class="scratchpad-telemetry-strip" id="scratchpadStrip">
           <div class="strip-item">
             <span class="strip-label">TIER</span>
@@ -100,13 +173,6 @@
             <span class="strip-label">HINTS</span>
             <strong class="strip-val" id="stripHintBadge">0 / 4</strong>
           </div>
-        </section>
-
-        <!-- COMPACT PINNED LIVE HEADS-UP DISPLAY (CHANNEL 1: HUD_DISPLAY) -->
-        <section class="live-hud-banner" id="liveHudBanner" hidden>
-          <span class="hud-channel-badge">ACTIVE HUD:</span>
-          <div class="live-hud-equation" id="liveHudEquation"></div>
-          <span class="hud-latency-tag" id="hudRenderLatency">0.2 ms</span>
         </section>
 
         <!-- LARGE SCROLLABLE CHAT FEED -->
@@ -188,7 +254,7 @@
       </main>
 
       <!-- MODEL PARAMETERS, VOICE CONTROLS & CHANNEL 2 TELEMETRY DRAWER -->
-      <aside class="params-drawer" id="paramsDrawer">
+      <aside class="params-drawer" id="paramsDrawer" hidden>
         <div class="drawer-header">
           <h2>Controls &amp; Live Telemetry</h2>
           <button type="button" class="close-drawer-btn" id="btnCloseParams" title="Hide panel">✕</button>

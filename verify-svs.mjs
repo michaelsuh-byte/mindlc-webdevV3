@@ -15,7 +15,10 @@ import {
   splitSpokenTextIntoClauses,
   analyzeStudentResponseAndEngagement,
   generateOfflineSocraticResponse,
-  buildSystemInstruction
+  buildSystemInstruction,
+  extractVisualQuestionFromSpoken,
+  ensureExplicitHudLatex,
+  inferElementaryDiagramIfHelpful
 } from './svs-engine.js';
 
 import { compileMathExpression, findCurveFeatures } from './graph-engine.js';
@@ -104,16 +107,18 @@ for (const modeId of [1, 2, 3, 4]) {
   assert.equal(mPrompt.includes(FLIGHT_MODES[modeId].diagnosticFocus), true);
 }
 
-// 9. Verify Section 15 Diagnostic Operational Examples (Case 1, Case 2, Case 3 Safety Net)
+// 9. Verify Section 15 Diagnostic Operational Examples (Case 1, Case 2, Case 3 Safety Net) with Explicit HUD & Plain Math-Literacy Phrasing
 const case1 = parseTriChannelPacket(
   generateOfflineSocraticResponse('How do I find the final velocity if it drops for 3 seconds?', 4).text
 );
-assert.equal(case1.spokenText.includes('calibrate our instruments'), true, 'Case 1 Kinematics Micro-Diagnostic');
+assert.equal(case1.spokenText.includes('force pulls it downward'), true, 'Case 1 Kinematics Micro-Diagnostic uses plain math-literacy phrasing');
+assert.equal(case1.hudLatex.includes('Find final speed'), true, 'Case 1 HUD explicitly states what is being asked');
 
 const case2 = parseTriChannelPacket(
   generateOfflineSocraticResponse('I keep getting the wrong answer for 2x^2 - 8x = 0.', 1).text
 );
-assert.equal(case2.spokenText.includes('what graphical feature'), true, 'Case 2 Quadratics Micro-Diagnostic');
+assert.equal(case2.spokenText.includes('flat horizontal x-axis'), true, 'Case 2 Quadratics Micro-Diagnostic uses plain everyday language instead of jargon');
+assert.equal(case2.hudLatex.includes('Goal: Find'), true, 'Case 2 HUD explicitly states the goal');
 
 const case3 = parseTriChannelPacket(
   generateOfflineSocraticResponse('Uh... the y-axis?', 1).text
@@ -243,4 +248,22 @@ const offlineMcIdk = generateOfflineSocraticResponse("I don't know", 1, 'CHARLIE
 });
 assert.equal(/Minecraft stash boxes/i.test(offlineMcIdk.text), true, 'Offline "I don\'t know" stays anchored to Minecraft stash boxes and asks which part is confusing');
 
-console.log('ALL MIC TURN-TAKING, INSTANT MIC RESUME, MULTI-TURN PERFORMANCE, AND SECTION 16 TOPIC-ANCHOR CLUE-GATHERING TESTS PASSED.');
+// 17. Verify Explicit HUD Question Extraction, Plain Math-Literacy Phrasing, and Elementary (Grade 6-8) Visual Aid <diagram> Channel
+const mcPacket = parseTriChannelPacket(
+  generateOfflineSocraticResponse('How do fractions work in real life using Minecraft stash boxes?', 4).text
+);
+assert.equal(Boolean(mcPacket.diagramSpec), true, 'Minecraft fraction response includes a <diagram> visual aid');
+assert.equal(mcPacket.diagramSpec.type, 'fraction_bar', 'Minecraft fraction diagram is a fraction_bar');
+assert.equal(mcPacket.hudQuestionText.endsWith('?'), true, 'Extracts explicit visual question for Left HUD Canvas');
+assert.equal(mcPacket.spokenText.includes('<diagram>'), false, 'Strips <diagram> JSON from spoken audio');
+
+const enrichedHud = ensureExplicitHudLatex('t = 3\\text{s}', 'What force pulls the object down and what is its final speed?', 'Free fall');
+assert.equal(enrichedHud.includes('Find final speed'), true, 'Enriches brief/vague HUD with explicit target question');
+
+const inferredBalance = inferElementaryDiagramIfHelpful('Can you help me solve 2x + 4 = 10?', '2x + 4 = 10', 'How many should we take away from both sides?', '2x + 4 = 10');
+assert.equal(inferredBalance?.type, 'balance_scale', 'Infers balance_scale visual aid for elementary linear equation');
+
+const noDiagramForCalc = inferElementaryDiagramIfHelpful('Find the derivative of x^2', 'f(x) = x^2', 'What is the derivative?', 'Calculus derivative');
+assert.equal(noDiagramForCalc, null, 'Does not show elementary diagram when not needed');
+
+console.log('ALL EXPLICIT HUD QUESTION, PLAIN MATH-LITERACY PHRASING, LEFT HUD CANVAS DIAGRAM, AND VOICE TESTS PASSED.');

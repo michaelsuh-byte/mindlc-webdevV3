@@ -145,21 +145,281 @@ body {
   color: var(--accent-amber);
 }
 
-/* MAIN WORKSPACE */
+/* MAIN WORKSPACE: LEFT HUD CANVAS + WIDER CHAT WINDOW */
 .main-workspace {
   flex: 1;
   display: flex;
   overflow: hidden;
 }
 
-.chat-column {
-  flex: 1;
+/* LEFT-SIDE VISUAL HUD CANVAS PANEL */
+.hud-canvas-panel {
+  width: 440px;
+  min-width: 375px;
+  max-width: 470px;
+  flex-shrink: 0;
+  background: #161820;
+  border-right: 1px solid var(--border-subtle);
+  padding: 12px 14px;
   display: flex;
   flex-direction: column;
-  max-width: 920px;
+  gap: 10px;
+  overflow-y: auto;
+}
+
+.hud-canvas-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.hud-canvas-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hud-canvas-icon {
+  font-size: 18px;
+}
+
+.hud-canvas-title-wrap h2 {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text-main);
+  letter-spacing: 0.01em;
+}
+
+.hud-canvas-sub {
+  display: block;
+  font-size: 10.5px;
+  color: var(--accent-blue);
+  font-weight: 500;
+}
+
+.hud-reset-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.hud-reset-btn:hover {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+  background: rgba(168, 199, 250, 0.1);
+}
+
+/* 1. EXPLICIT ACTIVE PROBLEM & VISUAL QUESTION CARD ON HUD CANVAS */
+.hud-active-question-card {
+  background: linear-gradient(145deg, rgba(28, 35, 51, 0.94), rgba(20, 24, 34, 0.96));
+  border: 1px solid rgba(168, 199, 250, 0.35);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+}
+
+.hud-card-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hud-topic-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #dbe6fd;
+  line-height: 1.38;
+  padding: 4px 8px;
+  background: rgba(15, 18, 26, 0.65);
+  border-left: 3px solid var(--accent-blue);
+  border-radius: 6px;
+}
+
+.hud-current-prompt-box {
+  background: rgba(129, 201, 149, 0.1);
+  border: 1px solid rgba(129, 201, 149, 0.35);
+  border-radius: 9px;
+  padding: 7px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.hud-prompt-label {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--accent-green);
+}
+
+.hud-current-question-text {
+  font-size: 12.8px;
+  font-weight: 600;
+  color: #f1f5f9;
+  line-height: 1.42;
+  margin: 0;
+}
+
+/* 2. VISUAL AID DIAGRAM SECTION (GRADE 6-8 & CONCEPTUAL MODELS) */
+.hud-diagram-section {
+  background: #1b1e28;
+  border: 1px solid rgba(253, 214, 99, 0.35);
+  border-radius: 12px;
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.hud-diagram-section[hidden] {
+  display: none !important;
+}
+
+.hud-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hud-section-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.hud-visual-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent-amber);
+  background: rgba(253, 214, 99, 0.14);
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+
+.hud-diagram-canvas-wrap {
+  width: 100%;
+  background: #11141c;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+#hudDiagramCanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.hud-diagram-caption {
+  font-size: 11.5px;
+  color: #cbd5e1;
+  line-height: 1.38;
+  margin: 0;
+}
+
+/* 3. STEP-BY-STEP PROGRESSION SECTION */
+.hud-step-progression-section {
+  flex: 1;
+  background: #1b1e28;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 150px;
+}
+
+.hud-step-count-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent-blue);
+  background: var(--accent-blue-bg);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.hud-step-progression-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  overflow-y: auto;
+}
+
+.hud-step-empty {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 10px 6px;
+  text-align: center;
+  line-height: 1.4;
+}
+
+.hud-step-item {
+  background: rgba(17, 20, 28, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+  padding: 7px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color 0.15s ease;
+}
+
+.hud-step-item.active-step {
+  border-color: rgba(168, 199, 250, 0.55);
+  background: rgba(30, 41, 64, 0.55);
+}
+
+.hud-step-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent-blue);
+}
+
+.hud-step-item-math {
+  font-size: 12.5px;
+  color: #ffffff;
+  overflow-x: auto;
+  padding: 2px 0;
+}
+
+.hud-step-item-question {
+  font-size: 11.5px;
+  color: #cbd5e1;
+  line-height: 1.35;
+}
+
+/* WIDER CHAT COLUMN FOR IMPROVED READABILITY */
+.chat-column {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  max-width: 1360px;
   width: 100%;
   margin: 0 auto;
-  padding: 0 16px 10px;
+  padding: 0 24px 10px;
   overflow: hidden;
 }
 
@@ -291,18 +551,16 @@ body {
   color: var(--accent-red);
 }
 
-/* COMPACT SINGLE-LINE PINNED HUD BANNER */
+/* PINNED HUD MATH DISPLAY BOX INSIDE LEFT HUD CANVAS */
 .live-hud-banner {
-  margin-top: 5px;
-  background: linear-gradient(135deg, rgba(30, 38, 56, 0.88), rgba(22, 27, 38, 0.92));
+  background: rgba(12, 16, 24, 0.92);
   border: 1px solid rgba(168, 199, 250, 0.35);
-  border-radius: 10px;
-  padding: 4px 12px;
+  border-radius: 9px;
+  padding: 8px 12px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-height: 32px;
+  justify-content: center;
+  min-height: 42px;
 }
 
 .live-hud-banner[hidden] {
@@ -318,7 +576,7 @@ body {
 }
 
 .live-hud-equation {
-  font-size: 13.5px;
+  font-size: 14px;
   color: #ffffff;
   flex: 1;
   text-align: center;
@@ -381,11 +639,11 @@ body {
 }
 
 .msg-bubble {
-  max-width: 82%;
-  padding: 7px 12px;
+  max-width: 90%;
+  padding: 9px 15px;
   border-radius: 14px;
-  font-size: 13px;
-  line-height: 1.42;
+  font-size: 13.8px;
+  line-height: 1.5;
 }
 
 .chat-msg.student .msg-bubble {

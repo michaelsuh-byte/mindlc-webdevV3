@@ -18,6 +18,8 @@ import {
   DEFAULT_TELEMETRY,
   STEM_SCENARIOS,
   sanitizeLatexForHud,
+  extractVisualQuestionFromSpoken,
+  inferElementaryDiagramIfHelpful,
   buildSystemInstruction,
   parseTriChannelPacket,
   isGraphRequestedByUser,
@@ -54,6 +56,10 @@ class SocraticGeminiChatApp {
     this.uncertaintyStreak = 0;
     this.lastTurnAskedForClue = false;
     this.gapAbortController = null;
+
+    // Left-Side HUD Canvas Step Progression & Auto-Refresh State
+    this.hudSteps = [];
+    this.hudShouldRefreshOnNextQuestion = false;
 
     // End-of-Session Manim Consent State & Stage 2 Concept Explanation State
     this.awaitingManimConsent = false;
@@ -103,10 +109,11 @@ class SocraticGeminiChatApp {
 
     this.initUI();
     this.updateTelemetryUI(this.currentTelemetry);
+    this.resetHudCanvasUI('Ready for Question');
 
     this.appendChatMessage(
       'svs',
-      'Hi! I am your Ontario high school STEM tutor with interactive graphing, step-by-step visual solution videos, and natural voice guidance. Pick a starter problem below or ask any STEM question.',
+      'Hi! I am your Ontario STEM tutor (Grades 6–12) with a visual Left HUD Canvas for step progression & diagrams, interactive graphing, and step-by-step solution videos. Pick a starter problem below or ask any math or science question.',
       `${VOCAL_PROFILES[this.activeProfileKey].code} • ${FLIGHT_MODES[this.activeModeId].name}`,
       ''
     );
@@ -117,6 +124,13 @@ class SocraticGeminiChatApp {
     this.renderPersonaButtons();
     this.renderStarterChips();
     this.populateVoiceDropdown();
+
+    const btnResetHudCanvas = document.getElementById('btnResetHudCanvas');
+    if (btnResetHudCanvas) {
+      btnResetHudCanvas.addEventListener('click', () => {
+        this.resetHudCanvasUI('HUD Canvas Refreshed');
+      });
+    }
 
     const drawer = document.getElementById('paramsDrawer');
     document.getElementById('btnToggleParams').addEventListener('click', () => {
@@ -252,8 +266,8 @@ class SocraticGeminiChatApp {
       this.lastGraphSpec = null;
       this.currentTelemetry = { ...DEFAULT_TELEMETRY };
       this.updateTelemetryUI(this.currentTelemetry);
+      this.resetHudCanvasUI('Fresh Study Session');
       document.getElementById('commsLog').innerHTML = '';
-      document.getElementById('liveHudBanner').hidden = true;
       this.appendChatMessage(
         'svs',
         'Started a fresh study session! Pick a problem below or ask any STEM question.',
@@ -434,7 +448,8 @@ class SocraticGeminiChatApp {
   }
 
   /**
-   * Explicitly ends the current question session and asks the user if they want a step-by-step solution video
+   * Explicitly ends the current question session, refreshes the Left HUD Canvas for the next question,
+   * and asks the user if they want a step-by-step solution video.
    */
   offerEndOfSessionManimVideo() {
     this.markQuestionSessionCompleted('Session Complete');
@@ -443,6 +458,9 @@ class SocraticGeminiChatApp {
       'Great work completing this problem! Would you like to watch a full step-by-step solution video with voice explanation for the question we just solved?';
     const profile = VOCAL_PROFILES[this.activeProfileKey];
     const voiceName = this.avionics.getSelectedNeuralVoiceName(this.activeProfileKey);
+
+    // Refresh the Left HUD Canvas now that one question is finished (signaled by offering the solution video)
+    this.refreshHudCanvasOnQuestionComplete(spoken);
 
     this.appendChatMessage(
       'svs',
@@ -875,7 +893,19 @@ class SocraticGeminiChatApp {
     if (spokenExplanation) {
       if (hudToDisplay) {
         this.lastHudLatex = hudToDisplay;
-        this.updatePinnedLiveHud(hudToDisplay, 0.4);
+        this.updateLeftHudCanvas({
+          topicText: this.activeTopicAnchor || this.lastStudentUtterance,
+          hudLatex: hudToDisplay,
+          questionText: extractVisualQuestionFromSpoken(spokenExplanation),
+          diagramSpec: inferElementaryDiagramIfHelpful(
+            this.lastStudentUtterance,
+            hudToDisplay,
+            spokenExplanation,
+            this.activeTopicAnchor
+          ),
+          elapsedMs: 0.4,
+          stepLabel: `Concept Bridge: ${gap.missingConcept}`
+        });
       }
 
       const explainTelemetry = {
@@ -1117,6 +1147,12 @@ class SocraticGeminiChatApp {
 
     this.lastStudentUtterance = utterance;
 
+    // If the previous question finished and refreshed the HUD Canvas, ensure step history is clean for the new question
+    if (this.hudShouldRefreshOnNextQuestion) {
+      this.hudSteps = [];
+      this.hudShouldRefreshOnNextQuestion = false;
+    }
+
     // Anchor the main topic on the first question of a session (never overwrite on "I don't know" or short replies)
     if (!this.activeTopicAnchor && utterance.trim().length > 3) {
       this.activeTopicAnchor = utterance.trim();
@@ -1272,11 +1308,15 @@ class SocraticGeminiChatApp {
     options = { speak: true, badge: '', fallbackTelemetry: null, studentUtterance: '' }
   ) {
     const t0 = performance.now();
-    const packet = parseTriChannelPacket(rawText, this.maxWords, options.fallbackTelemetry);
+    const packet = parseTriChannelPacket(
+      rawText,
+      this.maxWords,
+      options.fallbackTelemetry,
+      this.activeTopicAnchor || options.studentUtterance || this.lastStudentUtterance
+    );
 
     if (packet.hudLatex) {
       this.lastHudLatex = packet.hudLatex;
-      this.updatePinnedLiveHud(packet.hudLatex, performance.now() - t0);
     }
 
     // Guarantee a visual graph if `<graph>` was emitted OR if the user asked for a graph
@@ -1291,7 +1331,7 @@ class SocraticGeminiChatApp {
       this.lastGraphSpec = graphSpec;
     }
 
-    // Detect if this turn completes the explanation of a question ("a session")
+    // Detect if this turn completes the explanation of a question ("a session", signaled by offering the solution video)
     const spokenMentionsManim = /\b(manim|instructional\s+video|solution\s+video)\b/i.test(packet.spokenText || '');
     const isSessionComplete = Boolean(packet.telemetry.session_complete || spokenMentionsManim);
 
@@ -1301,6 +1341,30 @@ class SocraticGeminiChatApp {
     if (isSessionComplete) {
       this.awaitingManimConsent = true;
       this.markQuestionSessionCompleted('Session Complete');
+      // Refresh the Left HUD Canvas automatically after one question is finished!
+      this.refreshHudCanvasOnQuestionComplete(packet.spokenText);
+    } else {
+      // Determine if an elementary / conceptual visual aid diagram is helpful for this step
+      const diagramSpec =
+        packet.diagramSpec ||
+        inferElementaryDiagramIfHelpful(
+          options.studentUtterance || this.lastStudentUtterance,
+          packet.hudLatex || this.lastHudLatex,
+          packet.spokenText,
+          this.activeTopicAnchor
+        );
+
+      this.updateLeftHudCanvas({
+        topicText:
+          this.activeTopicAnchor ||
+          options.studentUtterance ||
+          this.lastStudentUtterance ||
+          'Active STEM Problem',
+        hudLatex: packet.hudLatex || this.lastHudLatex,
+        questionText: packet.hudQuestionText || extractVisualQuestionFromSpoken(packet.spokenText),
+        diagramSpec,
+        elapsedMs: performance.now() - t0
+      });
     }
 
     const profile = VOCAL_PROFILES[this.activeProfileKey];
@@ -1406,8 +1470,485 @@ class SocraticGeminiChatApp {
     this.renderLatexElement(eqContainer, latexStr);
 
     if (latencyTag) {
-      latencyTag.textContent = `${Math.max(0.2, elapsedMs).toFixed(1)} ms`;
+      latencyTag.textContent = `${Math.max(0.2, elapsedMs || 0.2).toFixed(1)} ms`;
     }
+  }
+
+  /**
+   * Resets the Left-Side HUD Canvas Panel to a clean state
+   */
+  resetHudCanvasUI(statusText = 'Ready for Next Question') {
+    this.hudSteps = [];
+    this.hudShouldRefreshOnNextQuestion = false;
+
+    const statusBadge = document.getElementById('hudSessionStatusBadge');
+    const topicTitle = document.getElementById('hudTopicTitle');
+    const qText = document.getElementById('hudCurrentQuestionText');
+    const diagSection = document.getElementById('hudDiagramSection');
+
+    if (statusBadge) statusBadge.textContent = statusText;
+    if (topicTitle) {
+      topicTitle.textContent = 'Select a starter problem or ask any Grade 6–12 STEM question to begin.';
+    }
+    this.updatePinnedLiveHud('\\text{Ready: Ask any math or science question!}', 0.2);
+    if (qText) {
+      qText.textContent = 'What math or science question would you like to explore today?';
+    }
+    if (diagSection) {
+      diagSection.hidden = true;
+    }
+    this.renderHudStepProgression();
+  }
+
+  /**
+   * Automatically refreshes the Left-Side HUD Canvas when one question is finished
+   * (signaled by asking whether the user wants the step-by-step solution video).
+   */
+  refreshHudCanvasOnQuestionComplete(videoOfferPrompt = '') {
+    this.hudSteps = [];
+    this.hudShouldRefreshOnNextQuestion = true;
+
+    const statusBadge = document.getElementById('hudSessionStatusBadge');
+    const topicTitle = document.getElementById('hudTopicTitle');
+    const qText = document.getElementById('hudCurrentQuestionText');
+    const diagSection = document.getElementById('hudDiagramSection');
+
+    if (statusBadge) {
+      statusBadge.textContent = 'Question Complete • HUD Refreshed';
+    }
+    if (topicTitle) {
+      topicTitle.textContent = 'Question finished! HUD Canvas refreshed and ready for your next question.';
+    }
+    this.updatePinnedLiveHud(
+      '\\text{Question Complete } \\checkmark \\quad (\\text{Ready for Next Question})',
+      0.2
+    );
+    if (qText) {
+      qText.textContent =
+        extractVisualQuestionFromSpoken(videoOfferPrompt) ||
+        'Would you like to watch the step-by-step solution video, or start a new question?';
+    }
+    if (diagSection) {
+      diagSection.hidden = true;
+    }
+    this.renderHudStepProgression();
+  }
+
+  /**
+   * Updates the Left-Side HUD Canvas with:
+   *  1. The explicit active problem/topic,
+   *  2. The current step's `<hud>` equation/example,
+   *  3. The exact question currently being asked visually,
+   *  4. The optional Elementary / Concept Visual Aid Diagram (only when needed), and
+   *  5. The step-by-step progression list for the current question.
+   */
+  updateLeftHudCanvas({
+    topicText = '',
+    hudLatex = '',
+    questionText = '',
+    diagramSpec = null,
+    elapsedMs = 0.2,
+    stepLabel = ''
+  } = {}) {
+    const statusBadge = document.getElementById('hudSessionStatusBadge');
+    const topicTitle = document.getElementById('hudTopicTitle');
+    const qText = document.getElementById('hudCurrentQuestionText');
+    const diagSection = document.getElementById('hudDiagramSection');
+    const diagTitle = document.getElementById('hudDiagramTitle');
+    const diagCanvas = document.getElementById('hudDiagramCanvas');
+    const diagCaption = document.getElementById('hudDiagramCaption');
+
+    if (statusBadge) {
+      statusBadge.textContent = `Active Problem • Step ${this.hudSteps.length + 1}`;
+    }
+
+    const cleanTopic = String(topicText || this.activeTopicAnchor || 'Active STEM Problem')
+      .replace(/\$/g, '')
+      .trim();
+    if (topicTitle && cleanTopic) {
+      topicTitle.textContent = `Main Problem: ${cleanTopic}`;
+    }
+
+    const effectiveLatex =
+      sanitizeLatexForHud(hudLatex) ||
+      '\\text{Problem: } ' + cleanTopic.replace(/[\\{}]/g, '').slice(0, 50);
+    this.updatePinnedLiveHud(effectiveLatex, elapsedMs);
+
+    const cleanQuestion = String(
+      questionText || 'What do you think our next step is?'
+    )
+      .replace(/\$/g, '')
+      .trim();
+    if (qText) {
+      qText.textContent = cleanQuestion;
+    }
+
+    // Show Visual Aid Diagram ONLY when necessary and deemed to improve student's understanding
+    if (diagramSpec && diagSection && diagCanvas) {
+      diagSection.hidden = false;
+      if (diagTitle) {
+        diagTitle.textContent = diagramSpec.title || 'Visual Concept Aid';
+      }
+      if (diagCaption) {
+        diagCaption.textContent = diagramSpec.caption || '';
+      }
+      this.renderVisualAidDiagram(diagCanvas, diagramSpec);
+    } else if (diagSection) {
+      diagSection.hidden = true;
+    }
+
+    // Append or update the step progression entry for the current question
+    const lastStep = this.hudSteps[this.hudSteps.length - 1];
+    if (
+      !lastStep ||
+      lastStep.hudLatex !== effectiveLatex ||
+      lastStep.questionText !== cleanQuestion
+    ) {
+      this.hudSteps.push({
+        stepNumber: this.hudSteps.length + 1,
+        label: stepLabel || `Step ${this.hudSteps.length + 1}`,
+        hudLatex: effectiveLatex,
+        questionText: cleanQuestion
+      });
+      if (this.hudSteps.length > 10) {
+        this.hudSteps = this.hudSteps.slice(-10);
+      }
+    }
+
+    if (statusBadge) {
+      statusBadge.textContent = `Active Problem • Step ${this.hudSteps.length}`;
+    }
+    this.renderHudStepProgression();
+  }
+
+  /**
+   * Renders the chronological step progression cards inside `#hudStepProgressionList`
+   */
+  renderHudStepProgression() {
+    const listEl = document.getElementById('hudStepProgressionList');
+    const countBadge = document.getElementById('hudStepCountBadge');
+    if (!listEl) return;
+
+    if (countBadge) {
+      countBadge.textContent = `${this.hudSteps.length} ${this.hudSteps.length === 1 ? 'Step' : 'Steps'}`;
+    }
+
+    listEl.innerHTML = '';
+    if (this.hudSteps.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'hud-step-empty';
+      empty.textContent = this.hudShouldRefreshOnNextQuestion
+        ? 'Question complete! The step progression canvas is refreshed and ready for your next question.'
+        : 'Each step of our current question will appear here in order as we build the solution together.';
+      listEl.appendChild(empty);
+      return;
+    }
+
+    this.hudSteps.forEach((step, idx) => {
+      const isLatest = idx === this.hudSteps.length - 1;
+      const item = document.createElement('div');
+      item.className = `hud-step-item ${isLatest ? 'active-step' : ''}`;
+
+      const head = document.createElement('div');
+      head.className = 'hud-step-item-head';
+      head.innerHTML = `<span>${step.label || `Step ${idx + 1}`}</span><span>${
+        isLatest ? '● Current Step' : '✓'
+      }</span>`;
+      item.appendChild(head);
+
+      if (step.hudLatex) {
+        const mathDiv = document.createElement('div');
+        mathDiv.className = 'hud-step-item-math';
+        this.renderLatexElement(mathDiv, step.hudLatex);
+        item.appendChild(mathDiv);
+      }
+
+      if (step.questionText) {
+        const qDiv = document.createElement('div');
+        qDiv.className = 'hud-step-item-question';
+        qDiv.textContent = step.questionText;
+        item.appendChild(qDiv);
+      }
+
+      listEl.appendChild(item);
+    });
+
+    listEl.scrollTop = listEl.scrollHeight;
+  }
+
+  /**
+   * Renders crisp Elementary (Grade 6–8) & Conceptual Visual Aid Diagrams on `#hudDiagramCanvas`:
+   * Supports `fraction_bar`, `balance_scale`, `number_line`, `ratio_bars`, and `area_model`.
+   */
+  renderVisualAidDiagram(canvas, spec = {}) {
+    if (!canvas || !spec) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const W = canvas.width || 760;
+    const H = canvas.height || 300;
+    ctx.clearRect(0, 0, W, H);
+
+    // Background
+    ctx.fillStyle = '#11141c';
+    ctx.fillRect(0, 0, W, H);
+
+    const type = String(spec.type || 'fraction_bar').toLowerCase();
+
+    if (type === 'fraction_bar') {
+      const num = Math.max(0, Number(spec.numerator) || 32);
+      const den = Math.max(1, Number(spec.denominator) || 64);
+      const ratio = Math.max(0, Math.min(1, num / den));
+      const segments = den <= 16 ? den : den === 64 ? 8 : 8;
+
+      ctx.fillStyle = '#e2e8f0';
+      ctx.font = 'bold 20px Inter, system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(
+        `${num} out of ${den} (${spec.unitLabel || `1 Whole = ${den} Parts`})`,
+        W / 2,
+        46
+      );
+
+      const barX = 68;
+      const barY = 82;
+      const barW = W - 136;
+      const barH = 74;
+
+      // Empty bar track
+      ctx.fillStyle = '#1e2536';
+      ctx.strokeStyle = '#64748b';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.roundRect(barX, barY, barW, barH, 10);
+      ctx.fill();
+      ctx.stroke();
+
+      // Filled portion
+      const fillW = Math.round(barW * ratio);
+      if (fillW > 0) {
+        const grad = ctx.createLinearGradient(barX, barY, barX + fillW, barY);
+        grad.addColorStop(0, '#4f9cf9');
+        grad.addColorStop(1, '#34d399');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.roundRect(barX, barY, fillW, barH, 10);
+        ctx.fill();
+      }
+
+      // Segment grid dividers
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
+      ctx.lineWidth = 1.5;
+      for (let i = 1; i < segments; i++) {
+        const sx = barX + (barW * i) / segments;
+        ctx.beginPath();
+        ctx.moveTo(sx, barY);
+        ctx.lineTo(sx, barY + barH);
+        ctx.stroke();
+      }
+
+      // Labels below bar
+      ctx.fillStyle = '#81c995';
+      ctx.font = 'bold 18px Inter, system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(`Filled Part (Top Number): ${num}`, barX, barY + barH + 38);
+
+      ctx.fillStyle = '#a8c7fa';
+      ctx.textAlign = 'right';
+      ctx.fillText(`Whole Slot (Bottom Number): ${den}`, barX + barW, barY + barH + 38);
+
+      // Simplified fraction badge
+      const gcd = (a, b) => (b === 0 ? a : gcd(b, a % b));
+      const g = gcd(num, den);
+      const simpNum = num / g;
+      const simpDen = den / g;
+      ctx.fillStyle = '#fdd663';
+      ctx.font = 'bold 19px Inter, system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(
+        g > 1
+          ? `Fraction: ${num}/${den}  =  ${simpNum}/${simpDen} of 1 full slot`
+          : `Fraction: ${num}/${den}`,
+        W / 2,
+        barY + barH + 84
+      );
+      return;
+    }
+
+    if (type === 'balance_scale') {
+      const leftText = String(spec.left || '2x + 4');
+      const rightText = String(spec.right || '10');
+
+      // Fulcrum base
+      const cx = W / 2;
+      const beamY = 148;
+      ctx.fillStyle = '#64748b';
+      ctx.beginPath();
+      ctx.moveTo(cx, beamY);
+      ctx.lineTo(cx - 42, 245);
+      ctx.lineTo(cx + 42, 245);
+      ctx.closePath();
+      ctx.fill();
+
+      // Horizontal balance beam
+      ctx.strokeStyle = '#fdd663';
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.moveTo(150, beamY);
+      ctx.lineTo(W - 150, beamY);
+      ctx.stroke();
+
+      // Equals sign on fulcrum
+      ctx.fillStyle = '#fdd663';
+      ctx.font = 'bold 26px Inter, system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('=', cx, beamY - 18);
+
+      // Left pan & box
+      const drawPan = (px, label, color) => {
+        ctx.strokeStyle = '#94a3b8';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(px - 85, beamY - 8);
+        ctx.lineTo(px + 85, beamY - 8);
+        ctx.stroke();
+
+        ctx.fillStyle = 'rgba(30, 41, 59, 0.95)';
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.roundRect(px - 78, beamY - 76, 156, 62, 10);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 22px Inter, system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(label, px, beamY - 37);
+      };
+
+      drawPan(210, leftText, '#a8c7fa');
+      drawPan(W - 210, rightText, '#81c995');
+
+      ctx.fillStyle = '#cbd5e1';
+      ctx.font = '600 17px Inter, system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(
+        'Both pans weigh the same — do the same operation to both sides!',
+        cx,
+        276
+      );
+      return;
+    }
+
+    if (type === 'number_line') {
+      const min = Number.isFinite(Number(spec.min)) ? Number(spec.min) : -5;
+      const max = Number.isFinite(Number(spec.max)) ? Number(spec.max) : 5;
+      const start = Number.isFinite(Number(spec.start)) ? Number(spec.start) : -2;
+      const end = Number.isFinite(Number(spec.end)) ? Number(spec.end) : 3;
+
+      const lineY = 175;
+      const padX = 72;
+      const lineW = W - padX * 2;
+      const toX = (v) => padX + ((v - min) / Math.max(1, max - min)) * lineW;
+
+      ctx.strokeStyle = '#94a3b8';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(padX - 18, lineY);
+      ctx.lineTo(W - padX + 18, lineY);
+      ctx.stroke();
+
+      for (let v = min; v <= max; v++) {
+        const x = toX(v);
+        ctx.strokeStyle = v === 0 ? '#fdd663' : '#94a3b8';
+        ctx.lineWidth = v === 0 ? 3 : 2;
+        ctx.beginPath();
+        ctx.moveTo(x, lineY - 10);
+        ctx.lineTo(x, lineY + 10);
+        ctx.stroke();
+
+        ctx.fillStyle = v === 0 ? '#fdd663' : '#e2e8f0';
+        ctx.font = v === 0 ? 'bold 17px Inter, sans-serif' : '16px Inter, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(String(v), x, lineY + 34);
+      }
+
+      // Jump arc from start to end
+      const sx = toX(start);
+      const ex = toX(end);
+      ctx.strokeStyle = '#4f9cf9';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(sx, lineY - 12);
+      ctx.quadraticCurveTo((sx + ex) / 2, lineY - 95, ex, lineY - 12);
+      ctx.stroke();
+
+      ctx.fillStyle = '#81c995';
+      ctx.beginPath();
+      ctx.arc(ex, lineY, 7, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#a8c7fa';
+      ctx.font = 'bold 18px Inter, sans-serif';
+      ctx.textAlign = 'center';
+      const delta = end - start;
+      ctx.fillText(
+        `Start at ${start}  →  Move ${delta >= 0 ? `+${delta}` : delta}  →  Land at ${end}`,
+        W / 2,
+        52
+      );
+      return;
+    }
+
+    if (type === 'ratio_bars') {
+      const valA = Math.max(1, Number(spec.valueA) || 3);
+      const valB = Math.max(1, Number(spec.valueB) || 5);
+      const maxV = Math.max(valA, valB, 1);
+      const unitW = Math.min(72, Math.floor((W - 240) / maxV));
+
+      const drawTape = (y, label, count, color) => {
+        ctx.fillStyle = '#e2e8f0';
+        ctx.font = 'bold 18px Inter, sans-serif';
+        ctx.textAlign = 'right';
+        ctx.fillText(`${label} (${count}):`, 155, y + 32);
+
+        for (let i = 0; i < count; i++) {
+          const bx = 175 + i * (unitW + 4);
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.roundRect(bx, y, unitW, 46, 6);
+          ctx.fill();
+        }
+      };
+
+      drawTape(75, spec.labelA || 'Part A', valA, '#4f9cf9');
+      drawTape(165, spec.labelB || 'Part B', valB, '#34d399');
+      return;
+    }
+
+    // Default / `area_model`
+    const rectX = 190;
+    const rectY = 65;
+    const rectW = 380;
+    const rectH = 165;
+    ctx.fillStyle = 'rgba(79, 156, 249, 0.22)';
+    ctx.strokeStyle = '#60a5fa';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.roundRect(rectX, rectY, rectW, rectH, 8);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 21px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(spec.insideLabel || 'Area = Length × Width', rectX + rectW / 2, rectY + rectH / 2 + 7);
+
+    ctx.fillStyle = '#fdd663';
+    ctx.font = 'bold 18px Inter, sans-serif';
+    ctx.fillText(spec.widthLabel || 'Length', rectX + rectW / 2, rectY - 14);
+    ctx.fillText(spec.heightLabel || 'Width', rectX - 65, rectY + rectH / 2 + 6);
   }
 
   /**

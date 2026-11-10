@@ -93,36 +93,36 @@ export const FLIGHT_MODES = {
     code: 'Mode 1',
     name: 'Socratic Hints',
     sublabel: 'Micro-Diagnostic + Step-by-Step Inquiry',
-    objective: 'Calibrate the student’s conceptual baseline first (max 2 low-stakes probes), abort immediately to a foundational bridge on any stall, and guide one micro-step delta at a time.',
-    diagnosticFocus: 'Probe what the equation or target quantity represents conceptually or graphically before doing any algebra (e.g., asking what setting an equation to zero finds on a graph).',
-    progressionRule: 'Once calibrated (or bridged via the Safety Net), guide the algebraic transformation one micro-step at a time using the 4-level Hint Ladder.'
+    objective: 'Calibrate the student’s conceptual baseline first (max 2 low-stakes probes in plain everyday English), abort immediately to a foundational bridge on any stall, and guide one micro-step delta at a time.',
+    diagnosticFocus: 'Ask a simple, everyday-language question about what the equation or target quantity means (for example, what happens to the height on a graph when an equation equals zero, or what the bottom number of a fraction means) before doing any calculation.',
+    progressionRule: 'Once calibrated (or bridged via the Safety Net), guide the step-by-step transformation one clear piece at a time using plain, accessible language.'
   },
   2: {
     id: 2,
     code: 'Mode 2',
     name: 'First Principles',
     sublabel: 'Intuition Probe + Axiom Derivation',
-    objective: 'Probe geometric or physical intuition first, then derive formulas from first principles (secant slopes, conservation laws, completing the square) one delta-step at a time.',
-    diagnosticFocus: 'Probe the student’s intuition about average rate of change, secant lines, or conservation laws before introducing formal limit or axiom notation.',
-    progressionRule: 'Bridge from everyday geometric/physical intuition directly into the formal first-principles derivation one micro-step per turn.'
+    objective: 'Probe everyday geometric or physical intuition first, then build formulas from the ground up one small step at a time.',
+    diagnosticFocus: 'Ask an easy, concrete question about how fast something changes between two points or how two quantities balance before introducing formal notation.',
+    progressionRule: 'Bridge from everyday geometric or physical intuition directly into the step-by-step derivation one clear step per turn.'
   },
   3: {
     id: 3,
     code: 'Mode 3',
     name: 'Exam Practice',
     sublabel: 'Domain Radar + Ontario Rubric Check',
-    objective: 'Calibrate awareness of domain restrictions, extraneous roots, and unit traps before solving or verifying Ontario curriculum exam problems.',
-    diagnosticFocus: 'Probe for domain restrictions, undefined denominators, even radicals, or sign traps before crunching numbers.',
-    progressionRule: 'Test candidate solutions against domain constraints and guide full Ontario rubric verification step by step.'
+    objective: 'Check awareness of allowed numbers (domain restrictions), impossible division by zero, and unit traps before solving or verifying Ontario curriculum problems.',
+    diagnosticFocus: 'Ask in plain English whether any numbers are not allowed in the expression (like dividing by zero or taking the square root of a negative number) before crunching numbers.',
+    progressionRule: 'Test candidate solutions against allowed-number rules and guide full Ontario rubric verification step by step.'
   },
   4: {
     id: 4,
     code: 'Mode 4',
     name: 'Real-World Canada',
     sublabel: 'Physical Calibration + STEM Application',
-    objective: 'Calibrate the physical forces, boundary conditions, or real-world meaning first, then model Canadian engineering and everyday STEM problems mathematically.',
-    diagnosticFocus: 'Probe what physical force, rate, or boundary condition governs the real-world system before writing or solving the formula.',
-    progressionRule: 'Map each physical observation to its mathematical term in the governing model and solve step by step.'
+    objective: 'Connect the problem to a concrete real-world object or action first, then build and solve the math model step by step.',
+    diagnosticFocus: 'Ask what real-world action, container size, or physical force is happening in the scenario before writing or solving the formula.',
+    progressionRule: 'Connect each real-world observation to its matching number or part in the math model and solve step by step.'
   }
 };
 
@@ -160,6 +160,7 @@ export function sanitizeLatexForHud(rawInput = '') {
 
   let cleaned = rawInput
     .replace(/<\/?hud>/gi, ' ')
+    .replace(/<\/?diagram>/gi, ' ')
     .replace(/<\/?telemetry>/gi, ' ')
     .replace(/<\/?graph>/gi, ' ')
     .replace(/```(?:latex|math)?/gi, ' ')
@@ -191,7 +192,7 @@ export function buildSystemInstruction(profileKey = 'CHARLIE', modeId = 1, maxWo
   const profile = VOCAL_PROFILES[profileKey] || VOCAL_PROFILES.CHARLIE;
   const mode = FLIGHT_MODES[modeId] || FLIGHT_MODES[1];
 
-  return `You are a warm, knowledgeable Ontario High School STEM Teacher (Grades 9–12: Math, Calculus & Vectors MCV4U, Functions MCR3U/MHF4U, Physics SPH3U/SPH4U, Chemistry SCH3U/SCH4U).
+  return `You are a warm, knowledgeable Ontario STEM Teacher (Grades 6–12: Elementary/Middle School Math & Science Grades 6–8, and High School Grades 9–12 Math, Calculus & Vectors MCV4U, Functions MCR3U/MHF4U, Physics SPH3U/SPH4U, Chemistry SCH3U/SCH4U).
 Tutor Voice Persona: ${profile.title} (${profile.subtitle}).
 Active Mode: ${mode.code} - ${mode.name} (${mode.objective}).
 Active Mode Diagnostic Focus: ${mode.diagnosticFocus}
@@ -202,50 +203,64 @@ Active Mode Progression Rule: ${mode.progressionRule}
 ## 00. OPERATIONAL DIRECTIVES & MULTI-CHANNEL DECOUPLING
 The system operates simultaneously across decoupled communication channels in a single response stream:
 
-1. \`<hud> ... </hud>\` (STUDENT MATH DISPLAY):
-   - Contains ONLY a single clean LaTeX math expression representing the current mathematical state or micro-step delta.
-   - IMPORTANT LATEX RULE: Write pure LaTeX inside \`<hud> ... </hud>\` WITHOUT any \`$\` or \`$$\` dollar signs! (Example: \`<hud>2x^2 - 8x = 0</hud>\`).
-2. \`<graph> ... </graph>\` (INTERACTIVE GRAPHING CALCULATOR — SELECTIVE USE ONLY):
-   - Do NOT emit a \`<graph>\` block on every turn or for purely algebraic, arithmetic, physics formula, or chemistry steps where a graph is not needed.
+1. \`<hud> ... </hud>\` (EXPLICIT VISUAL QUESTION & STEP DISPLAY ON LEFT HUD CANVAS):
+   - MANDATORY CLARITY RULE: Whenever you provide an example or ask a question, \`<hud>\` MUST ALWAYS clearly state what the example or equation is AND what question/goal is being asked so the student can see the question visually on the HUD!
+   - NEVER emit a vague, isolated symbol or fragment (e.g., NEVER emit just \`<hud>t = 3\\text{s}</hud>\` or \`<hud>64</hud>\`).
+   - Always include both the concrete equation/example and the clear target question inside \`<hud>\`, such as:
+     * \`<hud>\\text{Example: } \\frac{32\\text{ blocks}}{64\\text{ per slot}} = ? \\quad (\\text{What fraction of 1 slot is filled?})</hud>\`
+     * \`<hud>2x^2 - 8x = 0 \\quad (\\text{Goal: Find } x \\text{ where graph height } y = 0)</hud>\`
+     * \`<hud>v_i = 0,\\; t = 3\\text{ s},\\; a = ? \\implies v_f = v_i + a \\cdot t</hud>\`
+   - IMPORTANT LATEX RULE: Write pure LaTeX inside \`<hud> ... </hud>\` WITHOUT any \`$\` or \`$$\` dollar signs!
+2. \`<diagram> ... </diagram>\` (VISUAL AID DIAGRAM FOR GRADE 6–8 & CONCEPTUAL UNDERSTANDING — ONLY WHEN NECESSARY):
+   - Emit a single-line JSON \`<diagram>\` block ONLY when a visual aid diagram will genuinely improve the student's understanding (especially helpful for elementary/middle-school Grade 6–8 topics like fractions, ratios, number lines, balance-scale equations, and area/perimeter models).
+   - Do NOT emit \`<diagram>\` when it is not needed.
+   - Supported \`"type"\` formats when needed:
+     * \`"fraction_bar"\`: \`<diagram>{"type":"fraction_bar","title":"Minecraft Slot Fraction (32 out of 64 blocks)","numerator":32,"denominator":64,"unitLabel":"1 Full Slot = 64 Blocks","caption":"32 blocks fill exactly half (1/2) of a 64-block slot."}</diagram>\`
+     * \`"balance_scale"\`: \`<diagram>{"type":"balance_scale","title":"Equation Balance Scale","left":"2x + 4","right":"10","caption":"Both sides weigh the same—subtract 4 from both pans to keep it balanced."}</diagram>\`
+     * \`"number_line"\`: \`<diagram>{"type":"number_line","title":"Number Line Jump","min":-5,"max":5,"start":-2,"end":3,"caption":"Starting at -2 and moving +5 steps right lands at +3."}</diagram>\`
+     * \`"ratio_bars"\`: \`<diagram>{"type":"ratio_bars","title":"Ratio Comparison","labelA":"Part A","valueA":3,"labelB":"Part B","valueB":5,"caption":"Comparing 3 parts to 5 parts."}</diagram>\`
+     * \`"area_model"\`: \`<diagram>{"type":"area_model","title":"Rectangle Area Model","widthLabel":"6 m","heightLabel":"4 m","insideLabel":"Area = 6 × 4 = 24 m²","caption":"Area counts the total squares inside the rectangle."}</diagram>\`
+3. \`<graph> ... </graph>\` (INTERACTIVE GRAPHING CALCULATOR — SELECTIVE USE ONLY):
+   - Do NOT emit a \`<graph>\` block on every turn or for arithmetic, elementary fractions, physics formulas, or algebra steps where a coordinate graph is not needed.
    - Emit a \`<graph>\` block ONLY when:
      (a) The student explicitly asks to see a graph, plot, curve, parabola, tangent, vertex, or intercept, OR
-     (b) Visualizing the function curve is strictly needed at this specific step and directly benefits the student's conceptual understanding (e.g., visually connecting algebraic roots to x-intercepts).
+     (b) Visualizing the coordinate curve is strictly needed at this specific step and directly benefits the student's understanding.
    - Format when needed: \`<graph>{"functions":["2*x^2 - 8*x"],"title":"Graph of f(x) = 2x^2 - 8x","xDomain":[-4,6],"yDomain":[-10,10]}</graph>\`
-2b. \`<table_data> ... </table_data>\` (OPTIONAL STRUCTURED SUMMARY TABLE):
-   - When comparing coefficients, factor pairs, domain intervals, sign charts, or key equation properties, you may emit a concise single-line JSON table to enhance visual legibility:
-     \`<table_data>{"headers":["Parameter","Value","Meaning"],"rows":[["a","2","Leading coefficient"],["b","-8","Linear coefficient"]]}</table_data>\`
-3. \`<telemetry> ... </telemetry>\` (BACKEND DASHBOARD / METRIC ENGINE):
+3b. \`<table_data> ... </table_data>\` (OPTIONAL STRUCTURED SUMMARY TABLE):
+   - When comparing numbers, factor pairs, or step values helps clarity, you may emit a single-line JSON table:
+     \`<table_data>{"headers":["Part","Value","Meaning"],"rows":[["Top (Numerator)","32","Blocks you have"],["Bottom (Denominator)","64","Blocks in 1 full slot"]]}</table_data>\`
+4. \`<telemetry> ... </telemetry>\` (BACKEND DASHBOARD / METRIC ENGINE):
    - Emits a single-line minified JSON payload:
      \`<telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":85,"i_reg":90,"cli":80,"hint_level":0,"session_complete":false}</telemetry>\`
    - Set \`"session_complete": true\` ONLY when the student has reached the final answer or finished solving/understanding the problem!
-4. [PLAIN SPOKEN TEXT] (AUDIO SYNTHESIZER):
-   - Everything outside \`<hud>\`, \`<graph>\`, \`<table_data>\`, and \`<telemetry>\` tags is routed to the voice emitter.
+5. [PLAIN SPOKEN TEXT] (AUDIO SYNTHESIZER — MATH-LITERACY-ACCESSIBLE PHRASING):
+   - Everything outside \`<hud>\`, \`<diagram>\`, \`<graph>\`, \`<table_data>\`, and \`<telemetry>\` tags is routed to the voice emitter.
    - Strict 1–2 sentence limit (aim for 15 to 28 spoken words, strictly under ${maxWords} spoken words). Zero preamble.
    - NEVER use \`$\` signs or LaTeX commands in the spoken text.
+   - PLAIN MATH-LITERACY-ACCESSIBLE PHRASING (CRITICAL):
+     * Every question you ask—whether it is a diagnostic survey question to gauge understanding, a clue-gathering question, or a step-by-step guiding question—MUST be phrased in plain, concrete, everyday language so that a student **even with a weak math literacy background** can immediately understand what is being asked!
+     * Avoid unexplained jargon like "graphical feature", "linear coefficient", "radicand", "secant slope", or "monomial factor".
+     * Whenever you mention a math term, pair it right away with its plain everyday meaning (for example: instead of asking "What graphical feature are we looking for when the equation equals zero?", ask "When this equation equals zero, the height on the graph is zero—where does the curve touch the flat horizontal x-axis?"; instead of "What is the denominator?", ask "What number goes on the bottom of our fraction to show how many items fill one whole box?").
    - END-OF-SESSION SOLUTION VIDEO OFFER: When the student finishes solving the problem (\`"session_complete": true\`), congratulate them briefly and ask: "Would you like to watch a full step-by-step solution video with voice explanation for this question?" (Never mention the word "Manim" or internal engine names).
 
 ---
 
 ## 15. COLD-START BASELINE CALIBRATION (MICRO-DIAGNOSTIC PROBING)
-Do not assume the student's foundation based solely on their immediate question. Before initiating the Hint Ladder or Socratic derivation for a new topic, you MUST perform a "Micro-Diagnostic" to map their current cognitive coordinates, adapted to the Active Mode (${mode.code} - ${mode.name}).
+Do not assume the student's foundation based solely on their immediate question. Before initiating the Hint Ladder or Socratic derivation for a new topic, you MUST perform a "Micro-Diagnostic" to map their current cognitive coordinates, adapted to the Active Mode (${mode.code} - ${mode.name}) and phrased in plain, everyday English that any student can understand.
 
 ### DIAGNOSTIC RULES OF ENGAGEMENT:
 1. THE 2-SHOT LIMIT:
-   - You are permitted a MAXIMUM of 2 sharp, targeted diagnostic questions before proceeding to the actual problem.
+   - You are permitted a MAXIMUM of 2 clear, friendly diagnostic questions before proceeding to the actual problem.
    - Do not rapid-fire. One question per audio turn.
-2. CONCEPT OVER COMPUTATION:
-   - Test the underlying concept, not the calculation. (e.g., If they ask how to use the quadratic formula or solve a quadratic, first ask what the formula or setting the equation to zero actually finds on a graph).
-   - Adapt the concept probe to the Active Mode:
-     * Mode 1 (Socratic Hints): Probe the core mathematical/graphical meaning of the equation before computing.
-     * Mode 2 (First Principles): Probe the geometric or physical intuition (e.g. secant slope or rate of change) before setting up the formal derivation.
-     * Mode 3 (Exam Practice): Probe for domain restrictions, undefined values, or exam traps before solving.
-     * Mode 4 (Real-World Canada): Probe the physical forces, boundary conditions, or real-world meaning before applying the formula.
+2. CONCEPT OVER COMPUTATION (IN PLAIN EVERYDAY WORDS):
+   - Check the core idea in plain language before calculating.
+   - Always make sure \`<hud>\` visually shows both the example/equation AND the question being asked.
 3. LOW-STAKES FRAMING (NON-INTIMIDATING):
-   - Soften the probe so it feels like collaborative alignment, not an interrogation.
-   - Acceptable openers: "Before we tackle the numbers, let's check our map...", "Just so we start at the best spot...", "Remind me real quick...", "Just to calibrate our instruments first..."
+   - Soften the probe so it feels like friendly teamwork, not a test.
+   - Acceptable openers: "Before we tackle the numbers, let's check our starting point...", "Just so we start at the best spot...", "Let's look at the big picture first..."
 4. IMMEDIATE ABORT ON STALL (THE SAFETY NET):
-   - If the student hesitates, expresses uncertainty, or fails the diagnostic probe, do NOT ask the second diagnostic question.
-   - Immediately drop to foundational scaffolding: briefly supply the missing concept in one clear, encouraging sentence and ask a simple Step 1 operational question (tagging \`"delib_state": "COGNITIVE_STALL"\` and \`"hint_level": 1\`).
+   - If the student hesitates, expresses uncertainty, or misses the diagnostic probe, do NOT ask a second diagnostic question.
+   - Immediately drop to foundational scaffolding: briefly supply the missing concept in one clear, everyday sentence and ask a simple Step 1 question (tagging \`"delib_state": "COGNITIVE_STALL"\` and \`"hint_level": 1\`).
 
 ---
 
@@ -253,36 +268,36 @@ Do not assume the student's foundation based solely on their immediate question.
 
 #### CASE 1: VERIFYING BASE CONCEPT (PHYSICS - KINEMATICS)
 Student: "How do I find the final velocity if it drops for 3 seconds?"
-[BAD ACTION: Immediately setting up v_f = v_i + at]
-[CORRECT ACTION: Micro-Diagnostic]
+[BAD ACTION: Showing a vague <hud>t = 3s</hud> or jumping straight to v_f = v_i + at]
+[CORRECT ACTION: Explicit <hud> showing given + goal, and a plain-English diagnostic question]
 Transmission:
 <hud>
-\\text{Time } (t) = 3\\text{s}
+\\text{Dropped Object: } t = 3\\text{ s},\\; v_i = 0 \\implies \\text{Find final speed } v_f \\text{ (What force pulls it down?)}
 </hud>
 <telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":80,"i_eff":80,"i_reg":90,"cli":83,"hint_level":0,"session_complete":false}</telemetry>
-We can absolutely find that. Just to calibrate our instruments first: what is actually pulling the object down, and what is its acceleration?
+We can definitely find that final speed! First, when an object drops in free fall, what force pulls it downward and how much speed does it gain each second?
 
 #### CASE 2: VERIFYING BASE CONCEPT (MATH - QUADRATICS)
 Student: "I keep getting the wrong answer for 2x^2 - 8x = 0."
-[BAD ACTION: Immediately saying "Factor out the 2x."]
-[CORRECT ACTION: Micro-Diagnostic]
+[BAD ACTION: Asking vaguely "What graphical feature are we looking for?"]
+[CORRECT ACTION: Explicit <hud> + plain-English question anyone with weak math literacy can understand]
 Transmission:
 <hud>
-2x^2 - 8x = 0
+2x^2 - 8x = 0 \\quad (\\text{Goal: Find } x \\text{ where graph height } y = 0)
 </hud>
 <telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":85,"i_reg":90,"cli":86,"hint_level":0,"session_complete":false}</telemetry>
-Let's figure out where the drift is. Before doing the math, what graphical feature are we actually looking for when an equation equals zero?
+Let's find where the mix-up happens! When this equation equals zero, the height y on the graph is zero—what do we call the points where the curve crosses the flat horizontal x-axis?
 
 #### CASE 3: ABORTING DIAGNOSTIC ON STUDENT STALL (THE SAFETY NET)
 Student (answering the Case 2 probe): "Uh... the y-axis?"
 [BAD ACTION: Asking a second diagnostic question like "No, what about the x-axis?"]
-[CORRECT ACTION: Abort diagnostic, provide immediate foundational bridge]
+[CORRECT ACTION: Abort diagnostic, provide immediate plain-English foundational bridge]
 Transmission:
 <hud>
-y = 2x^2 - 8x, \\quad \\text{Let } y = 0
+2x^2 - 8x = 0 \\implies 2x(\\text{?}) = 0 \\quad (\\text{Factor out what divides both } 2x^2 \\text{ and } 8x)
 </hud>
 <telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":60,"i_eff":55,"i_reg":80,"cli":64,"hint_level":1,"session_complete":false}</telemetry>
-Close! When the equation equals zero, the height is zero at the x-intercepts. Looking back at the equation, what common factor can we pull out of both terms?
+Close! Height zero is actually the horizontal x-axis (the x-intercepts). Looking at 2x squared minus 8x, what biggest number and letter can divide evenly into both parts?
 
 ---
 
@@ -295,10 +310,10 @@ Throughout elongated conversations, you MUST obey these four rules on every sing
 
 2. NEVER GUESS THE LEARNING GAP ON "I DON'T KNOW" OR "CAN I HAVE A HINT?":
    - When the student responds with "I don't know", "not sure", "I'm confused", or "Can I have a hint?", NEVER guess what their learning gap is and NEVER invent random new analogies or switch examples.
-   - Instead, ASK BACK the student to pinpoint what part feels missing or unclear and encourage them to identify the specific point they are struggling to understand so you can gather a clue (e.g., "No worries! Staying with our Minecraft stash box fraction, which part feels tricky right now—what the bottom number of the fraction means, or how many items fill one slot?").
+   - Instead, ASK BACK the student in plain, everyday words to pinpoint what part feels missing or unclear and encourage them to identify the specific point they are struggling to understand so you can gather a clue (e.g., "No worries! Staying with our Minecraft stash box fraction, which part feels tricky right now—what the bottom number of the fraction means, or how many blocks fill one slot?").
 
 3. FILL THE EXACT FUNDAMENTAL GAP ONCE A CLUE IS GATHERED:
-   - Once the student's reply gives you a clue about what they are struggling with, directly fill that exact fundamental gap from the ground up within the SAME topic/scenario.
+   - Once the student's reply gives you a clue about what they are struggling with, directly fill that exact fundamental gap from the ground up within the SAME topic/scenario using plain everyday language.
    - Do not skip foundational ground or jump to the next concept before checking that the student understands the current foundational piece.
 
 4. ANALYZE EVERY RESPONSE FOR ENGAGEMENT & BUILD A STEP-BY-STEP FLOW OF LOGIC:
@@ -730,13 +745,203 @@ export function detectManimConsentIntent(utterance = '') {
 }
 
 /**
- * MULTI-CHANNEL PARSER (`<hud>`, `<graph>`, `<telemetry>`, and Plain Spoken Audio)
+ * Extracts the clearest question sentence being asked in `spokenText` so the Left HUD Canvas
+ * can always display what question is currently being asked visually.
  */
-export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry = null) {
+export function extractVisualQuestionFromSpoken(spokenText = '') {
+  const clean = String(spokenText || '').replace(/\$/g, '').trim();
+  if (!clean) return '';
+
+  const sentences = clean.match(/[^.!?]+[.!?]+/g) || [clean];
+  const questionSentences = sentences
+    .map(s => s.trim())
+    .filter(s => s.endsWith('?'));
+
+  if (questionSentences.length > 0) {
+    return questionSentences[questionSentences.length - 1];
+  }
+  return sentences[sentences.length - 1].trim();
+}
+
+/**
+ * Guarantees that `hudLatex` is never empty or vague when the tutor gives an example or asks a question.
+ * If the raw `<hud>` is missing or is just a tiny isolated fragment without context, enriches it with the
+ * active example/question context so the student can see what the question is talking about on the HUD.
+ */
+export function ensureExplicitHudLatex(rawHudLatex = '', spokenText = '', activeTopicAnchor = '') {
+  let hud = sanitizeLatexForHud(rawHudLatex);
+  const spoken = String(spokenText || '').trim();
+  const combined = `${activeTopicAnchor} ${spoken}`.toLowerCase();
+
+  if (!hud) {
+    if (/minecraft|stash|slot|stack|64/i.test(combined)) {
+      return '\\text{Example: } \\frac{\\text{Blocks Have}}{64\\text{ per Slot}} = ?';
+    }
+    if (/fraction|numerator|denominator/i.test(combined)) {
+      return '\\text{Fraction} = \\frac{\\text{Part (Top)}}{\\text{Whole (Bottom)}}';
+    }
+    const qText = extractVisualQuestionFromSpoken(spoken);
+    if (qText) {
+      const shortQ = qText.replace(/[\\{}]/g, '').slice(0, 62);
+      return `\\text{Question: ${shortQ}}`;
+    }
+    return '';
+  }
+
+  // If the HUD is overly brief/vague (e.g. just "t = 3s" or "64") and doesn't show what we're finding, append the goal
+  const plainLength = hud.replace(/\\text|[{}^_\\]/g, '').trim().length;
+  const hasGoalOrImplies = /\\implies|\\quad|=.*\?|\bFind\b|\bGoal\b|\bExample\b/i.test(hud);
+  if (plainLength > 0 && plainLength <= 14 && !hasGoalOrImplies && spoken.includes('?')) {
+    if (/velocity|speed|drop|fall/i.test(combined) && /t\s*=\s*3/i.test(hud)) {
+      return `${hud},\\; v_i = 0 \\implies \\text{Find final speed } v_f`;
+    }
+    if (/2x\^2\s*-\s*8x\s*=\s*0/i.test(hud)) {
+      return `${hud} \\quad (\\text{Goal: Find } x \\text{ where height } y = 0)`;
+    }
+  }
+
+  return hud;
+}
+
+/**
+ * Infers an Elementary (Grade 6–8) / Visual Concept Aid Diagram ONLY when necessary and deemed
+ * to improve the student's understanding (e.g. fractions, Minecraft stash slots, ratios, number lines,
+ * balance-scale equations, area/perimeter models). Returns `null` when a diagram is not needed.
+ */
+export function inferElementaryDiagramIfHelpful(
+  utterance = '',
+  hudLatex = '',
+  spokenText = '',
+  activeTopicAnchor = ''
+) {
+  const combined = `${activeTopicAnchor} ${utterance} ${hudLatex} ${spokenText}`.toLowerCase();
+
+  // Do not show a diagram on session-complete video offer turns
+  if (/\b(solution\s+video|step-by-step\s+video|watch\s+a\s+full)\b/i.test(spokenText)) {
+    return null;
+  }
+
+  // 1. Fractions / Minecraft Stash Boxes / Part-of-Whole (Grade 6–8)
+  if (/\b(fraction|fractions|minecraft|stash|chest|slot|stack|numerator|denominator|half|quarter|third|eighths)\b/i.test(combined)) {
+    let num = 32;
+    let den = 64;
+    let unitLabel = '1 Full Slot = 64 Blocks';
+    let title = 'Visual Fraction Model: Minecraft Stash Slot';
+
+    const fracMatch =
+      hudLatex.match(/\\frac\{\s*(\d+)[^}]*\}\{\s*(\d+)[^}]*\}/) ||
+      combined.match(/\b(\d+)\s*(?:out\s+of|over|\/)\s*(\d+)\b/);
+
+    if (fracMatch) {
+      const n = Number(fracMatch[1]);
+      const d = Number(fracMatch[2]);
+      if (Number.isFinite(n) && Number.isFinite(d) && d > 0 && n <= d * 2) {
+        num = n;
+        den = d;
+      }
+    } else if (/16\s+blocks/i.test(combined)) {
+      num = 16;
+      den = 64;
+    } else if (/48\s+blocks/i.test(combined)) {
+      num = 48;
+      den = 64;
+    } else if (!/minecraft|stash|slot|stack|64/i.test(combined)) {
+      num = 3;
+      den = 4;
+      unitLabel = `1 Whole Divided into ${den} Equal Parts`;
+      title = `Visual Fraction Bar (${num}/${den})`;
+    }
+
+    if (!/minecraft|stash|slot|stack|64/i.test(combined) && den !== 64) {
+      unitLabel = `1 Whole = ${den} Equal Parts`;
+      title = `Visual Fraction Bar (${num}/${den})`;
+    }
+
+    return {
+      type: 'fraction_bar',
+      title,
+      numerator: num,
+      denominator: den,
+      unitLabel,
+      caption: `${num} out of ${den} equal parts (${
+        den === 64 && num === 32 ? '32/64 = 1/2 of a full slot' : `${num}/${den}`
+      })`
+    };
+  }
+
+  // 2. Ratios & Rates (Grade 6–8)
+  if (/\b(ratio|ratios|proportion|tape\s+diagram|for\s+every)\b/i.test(combined)) {
+    const ratioMatch = combined.match(/\b(\d+)\s*(?:to|:)\s*(\d+)\b/);
+    const valA = ratioMatch ? Math.min(12, Math.max(1, Number(ratioMatch[1]))) : 3;
+    const valB = ratioMatch ? Math.min(12, Math.max(1, Number(ratioMatch[2]))) : 5;
+    return {
+      type: 'ratio_bars',
+      title: `Visual Ratio Tape Diagram (${valA} : ${valB})`,
+      labelA: 'Group A',
+      valueA: valA,
+      labelB: 'Group B',
+      valueB: valB,
+      caption: `For every ${valA} parts in Group A, there are ${valB} parts in Group B.`
+    };
+  }
+
+  // 3. Number Line / Integers / Adding & Subtracting Negatives (Grade 6–8)
+  if (/\b(number\s+line|negative\s+number|integers|adding\s+negatives|subtracting\s+negatives|below\s+zero)\b/i.test(combined)) {
+    return {
+      type: 'number_line',
+      title: 'Visual Number Line',
+      min: -6,
+      max: 6,
+      start: -2,
+      end: 3,
+      caption: 'Moving right adds (+), and moving left subtracts (−) along the number line.'
+    };
+  }
+
+  // 4. Elementary / Middle School 1-Variable Linear Balance Scale (e.g. 2x + 4 = 10, without x^2)
+  if (
+    !/x\^2|x\^3|quadratic|parabola|derivative|sin|cos/i.test(combined) &&
+    (/\bbalance\s+scale\b/i.test(combined) ||
+      /\b\d*x\s*[+-]\s*\d+\s*=\s*\d+\b/i.test(combined))
+  ) {
+    const eqMatch = combined.match(/(\d*x\s*[+-]\s*\d+)\s*=\s*(\d+)/i);
+    const leftExpr = eqMatch ? eqMatch[1].replace(/\s+/g, ' ') : '2x + 4';
+    const rightExpr = eqMatch ? eqMatch[2].trim() : '10';
+    return {
+      type: 'balance_scale',
+      title: `Equation Balance Scale: ${leftExpr} = ${rightExpr}`,
+      left: leftExpr,
+      right: rightExpr,
+      caption: 'An equation is like a balanced scale: do the same operation to both sides to keep it level.'
+    };
+  }
+
+  // 5. Area & Perimeter Rectangle Model (Grade 6–8)
+  if (/\b(area\s+of\s+a\s+rectangle|perimeter|length\s+and\s+width|square\s+meters|grid\s+model)\b/i.test(combined)) {
+    return {
+      type: 'area_model',
+      title: 'Rectangle Area & Perimeter Visual Model',
+      widthLabel: 'Length = 6 units',
+      heightLabel: 'Width = 4 units',
+      insideLabel: 'Area = 6 × 4 = 24 sq units',
+      caption: 'Area measures the flat space inside (Length × Width); Perimeter measures the distance around the outside.'
+    };
+  }
+
+  return null;
+}
+
+/**
+ * MULTI-CHANNEL PARSER (`<hud>`, `<diagram>`, `<graph>`, `<telemetry>`, and Plain Spoken Audio)
+ */
+export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry = null, activeTopicAnchor = '') {
   if (!rawText || typeof rawText !== 'string') {
     return {
       hudLatex: '',
+      hudQuestionText: '',
+      diagramSpec: null,
       graphSpec: null,
+      tableSpec: null,
       telemetry: normalizeTelemetryPayload(fallbackTelemetry || DEFAULT_TELEMETRY),
       spokenText: '',
       audit: sanitizeForSpeech('', maxWords)
@@ -747,6 +952,7 @@ export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry 
   let parsedTelemetry = null;
   let parsedGraph = null;
   let parsedTable = null;
+  let parsedDiagram = null;
 
   // 1. Extract <hud>...</hud>
   let workingText = rawText.replace(/<hud>([\s\S]*?)<\/hud>/gi, (_match, inner) => {
@@ -754,6 +960,17 @@ export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry 
     if (cleanedInner) {
       hudBlocks.push(cleanedInner);
     }
+    return ' ';
+  });
+
+  // 1b. Extract <diagram>...</diagram>
+  workingText = workingText.replace(/<diagram>([\s\S]*?)<\/diagram>/gi, (_match, inner) => {
+    try {
+      const parsed = JSON.parse(inner.trim());
+      if (parsed && typeof parsed === 'object' && parsed.type) {
+        parsedDiagram = parsed;
+      }
+    } catch (_) {}
     return ' ';
   });
 
@@ -804,9 +1021,13 @@ export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry 
     return ' ';
   });
 
-  const hudLatex = sanitizeLatexForHud(hudBlocks.join(' \\quad '));
   const telemetry = normalizeTelemetryPayload(parsedTelemetry, fallbackTelemetry || DEFAULT_TELEMETRY);
   const audit = sanitizeForSpeech(workingText, maxWords);
+
+  // Ensure `<hud>` clearly states what the example/question is about
+  const rawJoinedHud = sanitizeLatexForHud(hudBlocks.join(' \\quad '));
+  const hudLatex = ensureExplicitHudLatex(rawJoinedHud, audit.cleanText, activeTopicAnchor);
+  const hudQuestionText = extractVisualQuestionFromSpoken(audit.cleanText);
 
   // Also detect if spoken text explicitly offers the step-by-step solution video
   if (/\b(solution\s+video|instructional\s+video|step-by-step\s+video|watch\s+a\s+full)\b/i.test(audit.cleanText)) {
@@ -815,6 +1036,8 @@ export function parseTriChannelPacket(rawText, maxWords = 30, fallbackTelemetry 
 
   return {
     hudLatex,
+    hudQuestionText,
+    diagramSpec: parsedDiagram,
     graphSpec: parsedGraph,
     tableSpec: parsedTable,
     telemetry,
@@ -832,6 +1055,7 @@ export function sanitizeForSpeech(rawText, maxWords = 30) {
   const audit = {
     rawText,
     hudStripped: false,
+    diagramStripped: false,
     graphStripped: false,
     telemetryStripped: false,
     preamblePurged: false,
@@ -851,6 +1075,11 @@ export function sanitizeForSpeech(rawText, maxWords = 30) {
   if (/<hud>[\s\S]*?<\/hud>/i.test(text)) {
     text = text.replace(/<hud>[\s\S]*?<\/hud>/gi, ' ').trim();
     audit.hudStripped = true;
+  }
+
+  if (/<diagram>[\s\S]*?<\/diagram>/i.test(text)) {
+    text = text.replace(/<diagram>[\s\S]*?<\/diagram>/gi, ' ').trim();
+    audit.diagramStripped = true;
   }
 
   if (/<graph>[\s\S]*?<\/graph>/i.test(text)) {
@@ -1055,13 +1284,13 @@ export function detectFaultCondition(utterance, context = {}) {
         return {
           code: 401,
           ...FAULT_CODES[401],
-          interceptResponse: `<hud>\\text{Fraction} = \\frac{\\text{Items Have}}{\\text{Full Stack (64)}}</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":55,"i_eff":55,"i_reg":70,"cli":72,"hint_level":1,"session_complete":false}</telemetry>No worries at all! Staying with our Minecraft stash boxes, which part feels confusing right now: what the bottom number of the fraction means, or how many items make one full stack?`
+          interceptResponse: `<hud>\\text{Example: } \\frac{\\text{Blocks Have (32)}}{\\text{Full Slot (64)}} = ? \\quad (\\text{What part feels confusing?})</hud><diagram>{"type":"fraction_bar","title":"Minecraft Stash Slot (32 out of 64 Blocks)","numerator":32,"denominator":64,"unitLabel":"1 Full Slot = 64 Blocks","caption":"Top number = blocks we have (32). Bottom number = blocks in 1 full slot (64)."}</diagram><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":55,"i_eff":55,"i_reg":70,"cli":72,"hint_level":1,"session_complete":false}</telemetry>No worries at all! Staying with our Minecraft stash boxes, which part feels confusing right now: what the bottom number of the fraction means, or how many blocks make one full stack?`
         };
       }
       return {
         code: 401,
         ...FAULT_CODES[401],
-        interceptResponse: `<hud>${hud}</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":52,"i_eff":55,"i_reg":68,"cli":75,"hint_level":1,"session_complete":false}</telemetry>No worries at all! So we stay right on track, which part of this step feels unclear to you right now—the meaning of the terms, or what operation comes first?`
+        interceptResponse: `<hud>${hud} \\quad (\\text{Which part feels unclear?})</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":52,"i_eff":55,"i_reg":68,"cli":75,"hint_level":1,"session_complete":false}</telemetry>No worries at all! So we stay right on track, which part of this step feels unclear to you right now—what the numbers represent, or which step comes first?`
       };
     }
   }
@@ -1101,7 +1330,15 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, _profileK
 
   if (/minecraft/i.test(norm) && /fraction/i.test(norm)) {
     return {
-      text: `<hud>\\text{Stack Fraction} = \\frac{\\text{Items}}{64}</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":86,"i_eff":85,"i_reg":90,"cli":40,"hint_level":0,"session_complete":false}</telemetry>Minecraft stash boxes are a great way to see fractions in action! Before we count chests, if one full slot holds 64 blocks, what fraction of a stack is 32 blocks?`,
+      text: `<hud>\\text{Example: } \\frac{32\\text{ blocks}}{64\\text{ per slot}} = ? \\quad (\\text{What fraction of 1 slot is filled?})</hud><diagram>{"type":"fraction_bar","title":"Minecraft Stash Slot (32 out of 64 Blocks)","numerator":32,"denominator":64,"unitLabel":"1 Full Slot = 64 Blocks","caption":"32 blocks out of 64 blocks fills half (1/2) of one stash slot."}</diagram><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":86,"i_eff":85,"i_reg":90,"cli":40,"hint_level":0,"session_complete":false}</telemetry>Minecraft stash boxes are a great way to see fractions in action! If one full slot holds 64 blocks and you have 32 blocks, what fraction of that slot is filled?`,
+      command: null,
+      fault: null
+    };
+  }
+
+  if (/2x\s*\+\s*4\s*=\s*10/i.test(norm) || (/balance\s+scale/i.test(norm) && /equation/i.test(norm))) {
+    return {
+      text: `<hud>2x + 4 = 10 \\quad (\\text{Goal: Get } 2x \\text{ by itself on the left side})</hud><diagram>{"type":"balance_scale","title":"Equation Balance Scale: 2x + 4 = 10","left":"2x + 4","right":"10","caption":"Both sides weigh 10. Take 4 away from both sides so the scale stays balanced!"}</diagram><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":86,"i_reg":90,"cli":38,"hint_level":0,"session_complete":false}</telemetry>Picture this equation like a balanced scale with 2x plus 4 on the left and 10 on the right. To get the 2x part by itself while keeping both sides balanced, how many should we take away from both sides?`,
       command: null,
       fault: null
     };
@@ -1110,7 +1347,7 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, _profileK
   if (isGraphRequestedByUser(norm)) {
     const spec = buildFallbackGraphSpec('', utterance);
     return {
-      text: `<hud>${spec.functions[0]}</hud><graph>${JSON.stringify(spec)}</graph><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":90,"i_eff":90,"i_reg":88,"cli":35,"hint_level":0,"session_complete":false}</telemetry>Here is the interactive graph of the function. Before we compute the exact algebra, what do those x-intercept dots on the horizontal axis tell us about the equation?`,
+      text: `<hud>${spec.functions[0]} = 0 \\quad (\\text{Where does the curve cross the flat } x\\text{-axis?})</hud><graph>${JSON.stringify(spec)}</graph><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":90,"i_eff":90,"i_reg":88,"cli":35,"hint_level":0,"session_complete":false}</telemetry>Here is the interactive graph of the function. Looking at the horizontal x-axis where height is zero, at what x numbers does the curve cross the line?`,
       command: null,
       fault: null
     };
@@ -1119,7 +1356,7 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, _profileK
   // Section 15 Case 1: Physics Kinematics Micro-Diagnostic
   if (/final\s+velocity/i.test(norm) && /3\s*seconds|drops/i.test(norm)) {
     return {
-      text: `<hud>\\text{Time } (t) = 3\\text{s}</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":80,"i_eff":80,"i_reg":90,"cli":83,"hint_level":0,"session_complete":false}</telemetry>We can absolutely find that. Just to calibrate our instruments first: what is actually pulling the object down, and what is its acceleration?`,
+      text: `<hud>\\text{Dropped Object: } t = 3\\text{ s},\\; v_i = 0 \\implies \\text{Find final speed } v_f \\text{ (What pulls it down?)}</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":80,"i_eff":80,"i_reg":90,"cli":83,"hint_level":0,"session_complete":false}</telemetry>We can definitely find that final speed! First, when an object drops in free fall, what force pulls it downward and how much speed does it gain each second?`,
       command: null,
       fault: null
     };
@@ -1128,7 +1365,7 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, _profileK
   // Section 15 Case 2: Math Quadratics (2x^2 - 8x = 0) Micro-Diagnostic
   if (/2x\^2\s*-\s*8x\s*=\s*0/i.test(norm)) {
     return {
-      text: `<hud>2x^2 - 8x = 0</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":85,"i_reg":90,"cli":86,"hint_level":0,"session_complete":false}</telemetry>Let's figure out where the drift is. Before doing the math, what graphical feature are we actually looking for when an equation equals zero?`,
+      text: `<hud>2x^2 - 8x = 0 \\quad (\\text{Goal: Find } x \\text{ where graph height } y = 0)</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":85,"i_reg":90,"cli":86,"hint_level":0,"session_complete":false}</telemetry>Let's find where the mix-up happens! When this equation equals zero, the height y on the graph is zero—what do we call the points where the curve crosses the flat horizontal x-axis?`,
       command: null,
       fault: null
     };
@@ -1137,7 +1374,7 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, _profileK
   // Section 15 Case 3: Aborting Diagnostic on Student Stall (The Safety Net)
   if (/y-axis|y\s+axis/i.test(norm)) {
     return {
-      text: `<hud>y = 2x^2 - 8x, \\quad \\text{Let } y = 0</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":60,"i_eff":55,"i_reg":80,"cli":64,"hint_level":1,"session_complete":false}</telemetry>Close! When the equation equals zero, the height is zero at the x-intercepts. Looking back at the equation, what common factor can we pull out of both terms?`,
+      text: `<hud>2x^2 - 8x = 0 \\implies 2x(\\text{?}) = 0 \\quad (\\text{What divides evenly into both } 2x^2 \\text{ and } 8x\\text{?})</hud><telemetry>{"step_tier":1,"delib_state":"COGNITIVE_STALL","i_flow":60,"i_eff":55,"i_reg":80,"cli":64,"hint_level":1,"session_complete":false}</telemetry>Close! Height zero is actually on the horizontal x-axis (the x-intercepts). Looking at 2x squared minus 8x, what biggest number and letter can divide evenly into both parts?`,
       command: null,
       fault: null
     };
@@ -1145,7 +1382,7 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, _profileK
 
   if (/2x\^2\s*\+\s*5x\s*\+\s*2/i.test(norm) || /factoring/i.test(norm)) {
     return {
-      text: `<hud>2x^2 + 5x + 2 = 0</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":86,"i_eff":85,"i_reg":88,"cli":45,"hint_level":0,"session_complete":false}</telemetry>Before we tackle the numbers, let's check our map: when this quadratic equals zero, what feature on the parabola are we trying to find?`,
+      text: `<hud>2x^2 + 5x + 2 = 0 \\quad (\\text{Goal: Find } x \\text{ where graph height } y = 0)</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":86,"i_eff":85,"i_reg":88,"cli":45,"hint_level":0,"session_complete":false}</telemetry>Before we tackle the numbers, let's check our starting point: when this equation equals zero, the height on the graph is zero—where on the horizontal x-axis are those points located?`,
       command: null,
       fault: null
     };
@@ -1154,20 +1391,20 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, _profileK
   if (/derivative\s+of\s+x\s*(squared|\^2|2)/i.test(norm) || /instantaneous\s+rate/i.test(norm)) {
     if (modeId === 2) {
       return {
-        text: `<hud>m_{\\text{sec}} = \\frac{f(x + h) - f(x)}{h}</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":86,"i_reg":90,"cli":55,"hint_level":0,"session_complete":false}</telemetry>Just so we start at the best spot, remind me real quick: how do we find the ordinary slope between two points on a curve before we bring them close together?`,
+        text: `<hud>m_{\\text{sec}} = \\frac{\\text{Rise}}{\\text{Run}} = \\frac{f(x + h) - f(x)}{h}</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":86,"i_reg":90,"cli":55,"hint_level":0,"session_complete":false}</telemetry>Just so we start at the best spot: how do we find the steepness (rise over run) between two points on a curve before we slide them close together?`,
         command: null,
         fault: null
       };
     }
     return {
-      text: `<hud>f(x) = x^2</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":90,"i_reg":86,"cli":35,"hint_level":0,"session_complete":false}</telemetry>Remind me real quick before we differentiate: what does the derivative of a function tell us about the graph at any point x?`,
+      text: `<hud>f(x) = x^2 \\implies f'(x) = \\text{Steepness (Slope) at } x</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":88,"i_eff":90,"i_reg":86,"cli":35,"hint_level":0,"session_complete":false}</telemetry>Before we calculate the derivative of x squared, what does the derivative tell us about how steep the curve is at any point x?`,
       command: null,
       fault: null
     };
   }
 
   return {
-    text: `<hud>\\Delta y = f(x + \\Delta x) - f(x)</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":84,"i_reg":86,"cli":42,"hint_level":0,"session_complete":false}</telemetry>Before we jump into the calculation, let's check our map: what main quantity or relationship is this question asking us to find?`,
+    text: `<hud>\\text{Problem Goal: Find the target value step by step}</hud><telemetry>{"step_tier":1,"delib_state":"IMMEDIATE","i_flow":85,"i_eff":84,"i_reg":86,"cli":42,"hint_level":0,"session_complete":false}</telemetry>Before we jump into the calculation, let's check our starting point: what numbers do we already know in this problem, and what are we trying to find?`,
     command: null,
     fault: null
   };
@@ -1175,15 +1412,29 @@ export function generateOfflineSocraticResponse(utterance, modeId = 1, _profileK
 
 export const STEM_SCENARIOS = [
   {
+    id: 'elem-minecraft-fractions',
+    course: 'Grade 6–8 • Visual Fractions',
+    title: '🧱 Minecraft Fractions (32 / 64 Slot)',
+    modeRecommendation: 4,
+    prompt: 'How do fractions work in real life using Minecraft stash boxes?'
+  },
+  {
+    id: 'elem-balance-equation',
+    course: 'Grade 6–8 • Visual Algebra',
+    title: '⚖️ Balance Scale: 2x + 4 = 10',
+    modeRecommendation: 1,
+    prompt: 'Can you help me solve 2x + 4 = 10 using a balance scale?'
+  },
+  {
     id: 'diag-quadratics',
-    course: 'Section 15 • Math Diagnostic',
+    course: 'Grade 10 • Math Diagnostic',
     title: '🧭 Quadratics: 2x² − 8x = 0',
     modeRecommendation: 1,
     prompt: 'I keep getting the wrong answer for 2x^2 - 8x = 0.'
   },
   {
     id: 'diag-kinematics',
-    course: 'Section 15 • Physics Diagnostic',
+    course: 'Grade 11 • Physics Diagnostic',
     title: '🧭 Free-Fall Velocity (t = 3s)',
     modeRecommendation: 4,
     prompt: 'How do I find the final velocity if it drops for 3 seconds?'
